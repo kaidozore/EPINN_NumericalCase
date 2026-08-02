@@ -8,8 +8,8 @@ import torch.nn as nn
 from nets.common import (
     FiberSteel02Module,
     LSTM_FC_Module,
-    central_difference,
     force_initial_zero,
+    newmark_average_acceleration_kinematics,
 )
 
 
@@ -64,8 +64,9 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
             self.LSTM_Module(network_input) * self.increment_scale_vector
         )
         displacement = torch.cumsum(increment, dim=1)
-        velocity = central_difference(displacement, self.delta_t)
-        acceleration = central_difference(velocity, self.delta_t)
+        velocity, acceleration = newmark_average_acceleration_kinematics(
+            increment, self.delta_t
+        )
         force_internal, force_nonlinear = self.Constitutive_Module(
             displacement
         )
@@ -90,21 +91,25 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         if state is None:
             increment = force_initial_zero(increment)
             displacement0 = torch.zeros_like(increment[:, :1])
+            velocity0 = torch.zeros_like(increment[:, :1])
+            acceleration0 = torch.zeros_like(increment[:, :1])
             material_state = None
         else:
             displacement0 = state["displacement"]
+            velocity0 = state["velocity"]
+            acceleration0 = state["acceleration"]
             material_state = state.get("material")
         displacement = displacement0 + torch.cumsum(increment, dim=1)
-        velocity = central_difference(displacement, self.delta_t)
+        velocity, acceleration = newmark_average_acceleration_kinematics(
+            increment, self.delta_t, velocity0, acceleration0
+        )
         if compute_physics:
-            acceleration = central_difference(velocity, self.delta_t)
             force_internal, force_nonlinear, material_state = (
                 self.Constitutive_Module.forward_chunk(
                     displacement, material_state
                 )
             )
         else:
-            acceleration = None
             force_internal = None
             force_nonlinear = None
         next_state = {
@@ -113,6 +118,8 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
                 for hidden, cell in lstm_state
             ),
             "displacement": displacement[:, -1:].detach(),
+            "velocity": velocity[:, -1:].detach(),
+            "acceleration": acceleration[:, -1:].detach(),
             "material": (
                 None
                 if material_state is None

@@ -458,3 +458,47 @@ def central_difference(
     return torch.cat(
         [first.unsqueeze(1), middle, last.unsqueeze(1)], dim=1
     )
+
+
+def newmark_average_acceleration_kinematics(
+    displacement_increment: torch.Tensor,
+    delta_t: float,
+    initial_velocity: torch.Tensor | None = None,
+    initial_acceleration: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Recover velocity/acceleration for Newmark beta=1/4, gamma=1/2.
+
+    Alternating signs express the Newmark recurrences as cumulative sums, so
+    the calculation remains vectorized and preserves exact TBPTT continuity.
+    """
+
+    if displacement_increment.ndim != 3:
+        raise ValueError("Expected displacement increments [batch,time,dof].")
+    if delta_t <= 0.0:
+        raise ValueError("delta_t must be positive.")
+    batch, steps, dof = displacement_increment.shape
+    zero = displacement_increment.new_zeros((batch, 1, dof))
+    velocity0 = zero if initial_velocity is None else initial_velocity
+    acceleration0 = zero if initial_acceleration is None else initial_acceleration
+    if velocity0.shape != zero.shape or acceleration0.shape != zero.shape:
+        raise ValueError("Initial Newmark states must have shape [batch,1,dof].")
+
+    indices = torch.arange(steps, device=displacement_increment.device)
+    signs = torch.where(
+        indices.remainder(2) == 0,
+        displacement_increment.new_tensor(-1.0),
+        displacement_increment.new_tensor(1.0),
+    ).reshape(1, steps, 1)
+
+    velocity_rhs = 2.0 * displacement_increment / float(delta_t)
+    velocity = signs * (
+        velocity0 + torch.cumsum(signs * velocity_rhs, dim=1)
+    )
+    previous_velocity = torch.cat((velocity0, velocity[:, :-1]), dim=1)
+    acceleration_rhs = 2.0 * (
+        velocity - previous_velocity
+    ) / float(delta_t)
+    acceleration = signs * (
+        acceleration0 + torch.cumsum(signs * acceleration_rhs, dim=1)
+    )
+    return velocity, acceleration

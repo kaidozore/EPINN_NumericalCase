@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import math
 
 import torch
 
@@ -93,21 +92,13 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
     checkpoint_dir: str | Path,
     checkpoint_data: dict,
     tbptt_length: int | None = None,
-    physics_ramp_epochs: int = 300,
-    physics_min_weight: float = 1.0e-6,
     gradient_clip: float | None = 1.0,
     save_period: int = 1,
 ) -> tuple[float, float]:
-    if not 0.0 < physics_min_weight <= 1.0:
-        raise ValueError("physics_min_weight must be in (0, 1].")
-    ramp_position = min(
-        1.0,
-        epoch / max(1, int(physics_ramp_epochs) - 1),
-    )
-    physics_fraction = math.exp(
-        math.log(physics_min_weight) * (1.0 - ramp_position)
-    )
-    modelLoss.set_physics_fraction(physics_fraction)
+    # The equation is already nondimensionalized, so every training sample
+    # uses the complete fixed physics loss from the first epoch.
+    physics_fraction = modelLoss.physics_weight
+    modelLoss.set_physics_fraction(1.0)
     train = _run_epoch(
         model,
         modelLoss,
@@ -118,8 +109,7 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
         gradient_clip,
         True,
     )
-    # Train and validation use the same nonzero physics weight at every epoch.
-    modelLoss.set_physics_fraction(physics_fraction)
+    modelLoss.set_physics_fraction(1.0)
     val = _run_epoch(
         model,
         modelLoss,

@@ -43,8 +43,10 @@ def parse_args() -> argparse.Namespace:
         "--tbptt-length", type=int, default=500,
         help="Consecutive steps per truncated-backpropagation chunk.",
     )
-    parser.add_argument("--physics-ramp-epochs", type=int, default=300)
-    parser.add_argument("--physics-min-weight", type=float, default=1.0e-6)
+    parser.add_argument(
+        "--physics-weight", type=float, default=1.0,
+        help="Fixed weight of the dimensionless equation loss from epoch 1.",
+    )
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument(
         "--device",
@@ -84,7 +86,23 @@ def main() -> None:
     increment_scale = rms_scale(training_increment)
     displacement_scale = rms_scale(training_displacement)
     velocity_scale = rms_scale(data.velocity[split.train])
-    force_scale = rms_scale(data.load[split.train])
+    external_force_scale = rms_scale(data.load[split.train])
+    # The first equation contains large K*u and nonlinear-force terms which
+    # cancel each other.  Scaling only by external load hides this cancellation
+    # and makes its gradient much larger than the supervised gradient.  Form a
+    # fixed per-DOF equation scale from the 40 labelled training samples only.
+    labelled = split.labelled
+    equation_terms = (
+        np.einsum("ij,btj->bti", data.mass, data.acceleration[labelled]),
+        np.einsum("ij,btj->bti", data.damping, data.velocity[labelled]),
+        np.einsum("ij,btj->bti", data.stiffness, data.displacement[labelled]),
+        data.nonlinear_force[labelled],
+        data.load[labelled],
+    )
+    physics_scale = np.sqrt(
+        sum(np.mean(np.square(term), axis=(0, 1)) for term in equation_terms)
+    )
+    physics_scale = np.maximum(physics_scale, 1.0e-12)
     tensors = as_torch_case(data, device)
     train_dataset = DynAnaDataset(data, split.train, split.labelled)
     # Validation responses are never used by the optimizer, but they must be
@@ -121,8 +139,9 @@ def main() -> None:
         stiffness=tensors["stiffness"],
         displacement_scale=torch.as_tensor(displacement_scale, dtype=torch.float64),
         velocity_scale=torch.as_tensor(velocity_scale, dtype=torch.float64),
-        force_scale=torch.as_tensor(force_scale, dtype=torch.float64),
+        force_scale=torch.as_tensor(physics_scale, dtype=torch.float64),
         increment_scale=torch.as_tensor(increment_scale, dtype=torch.float64),
+        physics_weight=args.physics_weight,
     ).double().to(device)
     optimizer = optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=5.0e-4
@@ -147,9 +166,9 @@ def main() -> None:
         "increment_scale": increment_scale.tolist(),
         "displacement_scale": displacement_scale.tolist(),
         "velocity_scale": velocity_scale.tolist(),
-        "force_scale": force_scale.tolist(),
-        "physics_ramp_epochs": args.physics_ramp_epochs,
-        "physics_min_weight": args.physics_min_weight,
+        "external_force_scale": external_force_scale.tolist(),
+        "physics_scale": physics_scale.tolist(),
+        "physics_weight": args.physics_weight,
         "gradient_clip": args.gradient_clip,
         "labelled_indices": split.labelled.tolist(),
     }
@@ -158,6 +177,11 @@ def main() -> None:
         f"Device: {device}; train/validation/test = "
         f"{len(split.train)}/{len(split.validation)}/{len(split.test)}; "
         f"labelled training samples = {len(split.labelled)}"
+    )
+    print(
+        "Dimensionless scales: load RMS = "
+        f"{np.array2string(load_scale, precision=3)}; equation RMS = "
+        f"{np.array2string(physics_scale, precision=3)}"
     )
     start_time = time.time()
     for epoch in range(args.epochs):
@@ -174,8 +198,6 @@ def main() -> None:
             checkpoint_dir=checkpoint_dir,
             checkpoint_data=checkpoint_data,
             tbptt_length=args.tbptt_length,
-            physics_ramp_epochs=args.physics_ramp_epochs,
-            physics_min_weight=args.physics_min_weight,
             gradient_clip=args.gradient_clip,
         )
         lr_scheduler.step()

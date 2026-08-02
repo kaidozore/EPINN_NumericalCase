@@ -84,8 +84,9 @@ python PINN_MDOFSys_Train.py --data-root ..
 ```
 
 PINN从第1轮开始使用全部170个训练样本计算物理残差，其中40个标签样本同时
-计算数据loss。物理权重从严格非零的`--physics-min-weight`开始，在
-`--physics-ramp-epochs`轮内按对数尺度平滑增加至1。训练和验证在每个epoch
+计算数据loss。荷载输入和位移增量输出均采用训练集逐自由度RMS无量纲化；
+运动方程按各物理项的联合RMS无量纲化，并从第1轮起以固定
+`--physics-weight`（默认1）作用于全部训练样本。训练和验证在每个epoch
 使用相同权重与loss定义，最优模型统一保存在`checkpoints/`。
 
 每个 epoch 的 `train_loss` 和 `val_loss` 写入当前时间戳目录下的

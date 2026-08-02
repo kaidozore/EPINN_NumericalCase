@@ -9,7 +9,11 @@ import numpy as np
 import torch
 
 from config import CaseConfig
-from nets.common import FiberSteel02Module, SCL_Module
+from nets.common import (
+    FiberSteel02Module,
+    SCL_Module,
+    newmark_average_acceleration_kinematics,
+)
 from nets.EPINN_Loss import EPINN_MDOFSys_DisIncrement_PhyLoss
 from nets.EPINN_Net import EPINN_PhyLSTM_NetBody
 from nets.PINN_Loss import PINN_MDOFSys_DisIncrement_LabPhyLoss
@@ -60,6 +64,34 @@ def main() -> None:
     print(
         "[PASS] MATLAB input: Fwave/U/V/Acc=[sample,time,5], "
         "M/C/K0=5x5, ETDM/A=[lag,10,10]."
+    )
+
+    # The PINN predicts displacement increments, while MATLAB used the
+    # average-acceleration Newmark scheme.  Confirm that the same discrete
+    # kinematics recover MATLAB velocity and acceleration to roundoff.
+    true_displacement = torch.as_tensor(data.displacement[:1], dtype=torch.float64)
+    true_increment = torch.diff(
+        true_displacement,
+        dim=1,
+        prepend=torch.zeros_like(true_displacement[:, :1]),
+    )
+    recovered_velocity, recovered_acceleration = (
+        newmark_average_acceleration_kinematics(true_increment, data.delta_t)
+    )
+    true_velocity = torch.as_tensor(data.velocity[:1], dtype=torch.float64)
+    true_acceleration = torch.as_tensor(data.acceleration[:1], dtype=torch.float64)
+    velocity_error = torch.sqrt(torch.mean((recovered_velocity - true_velocity) ** 2))
+    acceleration_error = torch.sqrt(
+        torch.mean((recovered_acceleration - true_acceleration) ** 2)
+    )
+    acceleration_rms = torch.sqrt(torch.mean(true_acceleration ** 2))
+    relative_acceleration_error = float(acceleration_error / acceleration_rms)
+    if relative_acceleration_error > 1.0e-7:
+        raise AssertionError("Newmark velocity/acceleration recovery failed.")
+    print(
+        "[PASS] Newmark kinematics: velocity RMSE="
+        f"{float(velocity_error):.3e}, acceleration relative RMSE="
+        f"{relative_acceleration_error:.3e}."
     )
 
     # Verify the Python constitutive port against forces already computed by
@@ -230,7 +262,7 @@ def main() -> None:
     chunk_length = max(3, check_steps // 2)
     with torch.no_grad():
         for name, model, keys in (
-            ("PINN", pinn, ("dis", "force_nonlinear")),
+            ("PINN", pinn, ("dis", "vel", "acc", "force_nonlinear")),
             ("E-PINN", epinn, ("dis_nl", "force_nonlinear", "dis")),
         ):
             whole = model(load)

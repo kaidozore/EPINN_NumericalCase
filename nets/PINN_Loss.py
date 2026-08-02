@@ -71,8 +71,7 @@ class PINN_MDOFSys_DisIncrement_LabPhyLoss(nn.Module):
                 + prediction["force_nonlinear"]
                 - load_sequence
             ) / self.force_scale
-            # Central-difference boundary values are less accurate.
-            physics_loss = torch.mean(residual[:, 2:-2, :].pow(2))
+            physics_loss = torch.mean(residual.pow(2))
         else:
             physics_loss = prediction["dis"].new_zeros(())
 
