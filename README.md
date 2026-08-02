@@ -63,6 +63,9 @@ ninja --version
 首次在 CUDA 设备上运行时会编译扩展，成功后终端显示
 `Steel02 CUDA extension loaded successfully.`；后续运行复用
 `extensions/_build_cuda/` 中的构建缓存。
+对于计算能力 8.9 的 Ada 显卡，如果系统 NVCC 低于 CUDA 11.8，加载器会自动
+改用 `8.6+PTX` 前向兼容编译，避免 `Unsupported gpu architecture
+'compute_89'`。
 
 先用短序列确认 CUDA 环境：
 

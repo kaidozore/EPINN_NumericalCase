@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import platform
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,6 +16,33 @@ _LIBRARY = None
 _FAILED = False
 _CUDA_MODULE = None
 _CUDA_FAILED = False
+
+
+def _configure_cuda_architecture() -> None:
+    """Use forward-compatible PTX when an old NVCC sees an Ada GPU."""
+
+    if os.environ.get("TORCH_CUDA_ARCH_LIST") or not torch.cuda.is_available():
+        return
+    capability = torch.cuda.get_device_capability()
+    nvcc = shutil.which("nvcc")
+    if nvcc is None:
+        return
+    result = subprocess.run(
+        [nvcc, "--version"], capture_output=True, text=True, check=False
+    )
+    match = re.search(r"release\s+(\d+)\.(\d+)", result.stdout + result.stderr)
+    if match is None:
+        return
+    nvcc_version = (int(match.group(1)), int(match.group(2)))
+    if capability >= (8, 9) and nvcc_version < (11, 8):
+        # CUDA before 11.8 cannot emit sm_89.  Compute-86 PTX is JIT-compiled
+        # by the current NVIDIA driver for Ada while preserving float64 math.
+        os.environ["TORCH_CUDA_ARCH_LIST"] = "8.6+PTX"
+        print(
+            "Steel02 CUDA compatibility: GPU sm_"
+            f"{capability[0]}{capability[1]}, NVCC {nvcc_version[0]}."
+            f"{nvcc_version[1]}; compiling 8.6+PTX."
+        )
 
 
 def _load_cpu_library():
@@ -65,6 +93,7 @@ def _load_cuda_module():
     if _CUDA_MODULE is not None or _CUDA_FAILED:
         return _CUDA_MODULE
     try:
+        _configure_cuda_architecture()
         from torch.utils.cpp_extension import load
         root = Path(__file__).resolve().parent
         build = root / "_build_cuda"
