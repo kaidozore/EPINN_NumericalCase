@@ -68,6 +68,10 @@ python EPINN_MDOFSys_Train.py --data-root .. --epochs 1000 \
   --batch-size 10 --tbptt-length 500
 ```
 
+PINN 和 E-PINN 均默认采用全局梯度范数裁剪 `1.0`。E-PINN 会在 CSV 中记录
+裁剪前的逐轮平均梯度范数 `train_gradient_norm_before_clip`；可通过
+`--gradient-clip 0.5` 调小阈值，或通过 `--gradient-clip 0` 关闭裁剪。
+
 每轮的训练和验证 loss 写入时间戳目录中的 `epoch_loss.csv`，并更新
 `epoch_loss.png`。每种方法只保留验证 loss 最小的 10 个 checkpoint。
 

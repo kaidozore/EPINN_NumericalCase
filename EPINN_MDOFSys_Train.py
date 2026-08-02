@@ -34,6 +34,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fc-size", type=int, default=120)
     parser.add_argument("--time-truncation", type=int, default=600)
     parser.add_argument("--learning-rate", type=float, default=1.0e-2)
+    parser.add_argument(
+        "--gradient-clip", type=float, default=1.0,
+        help="Maximum global gradient norm; use 0 to disable clipping.",
+    )
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--sequence-length", type=int, default=None)
     parser.add_argument(
@@ -117,6 +121,7 @@ def main() -> None:
         "n_dof": int(data.displacement.shape[2]),
         "delta_t": data.delta_t,
         "tbptt_length": args.tbptt_length,
+        "gradient_clip": args.gradient_clip,
         "output_increment_scale": float(config.displacement_increment_scale),
     }
 
@@ -143,6 +148,9 @@ def main() -> None:
             checkpoint_dir=checkpoint_dir,
             checkpoint_data=checkpoint_data,
             tbptt_length=args.tbptt_length,
+            gradient_clip=(
+                None if args.gradient_clip <= 0.0 else args.gradient_clip
+            ),
         )
         lr_scheduler.step()
     print(f"E-PINN training time: {time.time() - start_time:.2f} s")

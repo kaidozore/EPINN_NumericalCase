@@ -17,11 +17,14 @@ def _run_epoch(
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
     tbptt_length: int | None,
-) -> float:
+    gradient_clip: float | None,
+) -> tuple[float, float]:
     training = optimizer is not None
     model.train(training)
     total = 0.0
     count = 0
+    gradient_norm_total = 0.0
+    gradient_norm_count = 0
     context = torch.enable_grad() if training else torch.no_grad()
     with context:
         for loads, _ in loader:
@@ -38,13 +41,24 @@ def _run_epoch(
                 loss = modelLoss(prediction)
                 if training:
                     loss.backward()
+                    if gradient_clip is not None:
+                        gradient_norm = torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), gradient_clip
+                        )
+                        gradient_norm_total += float(gradient_norm.detach())
+                        gradient_norm_count += 1
                     optimizer.step()
                 weight = stop - start
                 total += float(loss.detach()) * weight
                 count += weight
     if count == 0:
         raise ValueError("The data loader did not produce any batches.")
-    return total / count
+    mean_gradient_norm = (
+        gradient_norm_total / gradient_norm_count
+        if gradient_norm_count > 0
+        else 0.0
+    )
+    return total / count, mean_gradient_norm
 
 
 def fitOneEpoch_EPINN_PhyLoss(
@@ -60,18 +74,26 @@ def fitOneEpoch_EPINN_PhyLoss(
     checkpoint_dir: str | Path,
     checkpoint_data: dict,
     tbptt_length: int | None = None,
+    gradient_clip: float | None = 1.0,
     save_period: int = 1,
 ) -> tuple[float, float]:
-    train_loss = _run_epoch(
-        model, modelLoss, genTrain, device, optimizer, tbptt_length
+    train_loss, train_gradient_norm = _run_epoch(
+        model, modelLoss, genTrain, device, optimizer, tbptt_length,
+        gradient_clip,
     )
-    val_loss = _run_epoch(
-        model, modelLoss, genVal, device, None, tbptt_length
+    val_loss, _ = _run_epoch(
+        model, modelLoss, genVal, device, None, tbptt_length, None,
     )
-    lossHistory.append_loss(epoch + 1, train_loss, val_loss)
+    lossHistory.append_loss(
+        epoch + 1,
+        train_loss,
+        val_loss,
+        {"train_gradient_norm_before_clip": train_gradient_norm},
+    )
     print(
         f"Epoch {epoch + 1}/{endEpoch} - "
         f"loss: {train_loss:.6e} - val_loss: {val_loss:.6e} - "
+        f"grad_norm: {train_gradient_norm:.3e} - "
         f"lr: {get_lr(optimizer):.3e}"
     )
     if (epoch + 1) % save_period == 0 or epoch + 1 == endEpoch:
@@ -84,6 +106,8 @@ def fitOneEpoch_EPINN_PhyLoss(
                 "optimizer_state_dict": optimizer.state_dict(),
                 "train_loss": train_loss,
                 "val_loss": val_loss,
+                "train_gradient_norm_before_clip": train_gradient_norm,
+                "gradient_clip": gradient_clip,
             },
             epoch=epoch + 1,
             train_loss=train_loss,
