@@ -209,7 +209,7 @@ def main() -> None:
     ).double()
     pinn_prediction = pinn(load)
     pinn_loss = PINN_MDOFSys_DisIncrement_PhyLoss(
-        tensors["mass"], tensors["damping"]
+        tensors["mass"], tensors["damping"], force_scale=1.0e5
     )(load, pinn_prediction)
     pinn_loss.backward()
     if not torch.isfinite(pinn_loss) or not finite_gradients(pinn):

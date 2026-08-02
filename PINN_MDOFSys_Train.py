@@ -90,7 +90,7 @@ def main() -> None:
         fc_size=args.fc_size,
     ).double().to(device)
     modelLoss = PINN_MDOFSys_DisIncrement_PhyLoss(
-        tensors["mass"], tensors["damping"]
+        tensors["mass"], tensors["damping"], force_scale=1.0e5
     ).double().to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
     lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -109,7 +109,8 @@ def main() -> None:
         "case_config": config.to_dict(),
         "network_input": "elastic_displacement_increment_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_increment",
-        "loss": "mean((M*a+C*v+Fint-Fwave)^2)",
+        "loss": "mean(((M*a+C*v+Fint-Fwave)/1e5)^2)",
+        "force_scale_n": 1.0e5,
         "input_increment_scale": float(config.displacement_increment_scale),
         "output_increment_scale": float(config.displacement_increment_scale),
         "hidden_size": args.hidden_size,
@@ -126,7 +127,7 @@ def main() -> None:
     )
     print(
         "PINN: elastic displacement increments -> LSTM -> nonlinear total "
-        "increments; loss = MSE(M*a + C*v + Fint - Fwave)."
+        "increments; loss = MSE((M*a + C*v + Fint - Fwave) / 1e5 N)."
     )
     start_time = time.time()
     for epoch in range(args.epochs):

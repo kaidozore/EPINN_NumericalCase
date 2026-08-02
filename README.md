@@ -20,13 +20,14 @@ PINN 和 E-PINN 均采用三层 LSTM（层间无 ReLU），随后连接
 
 - PINN：累计预测增量得到位移，用 Newmark 平均加速度关系恢复速度和加速度，
   再由 Steel02 纤维梁得到总恢复力 `Fint`。唯一的训练目标为
-  `mean((M*a + C*v + Fint - Fwave)^2)`。
+  `mean(((M*a + C*v + Fint - Fwave) / 1e5 N)^2)`。这里对完整平衡残差
+  统一采用固定的 `1e5 N` 尺度，不分别缩放方程中的各项。
 - E-PINN：由预测位移计算非线性恢复力并送入固定 SCL；唯一的训练目标为
   `mean((du_LSTM - du_SCL)^2)`。
 
-以上两个 loss 都是物理单位下残差的直接 MSE，不使用标签 loss、响应全量
-loss、额外权重或数据集 RMS 缩放。PINN loss 的单位为 `N^2`，E-PINN loss
-的单位为 `m^2`，因此两者的数值大小不能直接比较。
+以上两个 loss 都不使用标签 loss、响应全量 loss、额外权重或数据集 RMS
+缩放。PINN loss 是经过固定力尺度处理的无量纲 MSE；E-PINN loss 是物理位移
+增量残差的 MSE，单位为 `m^2`，因此两者的数值大小不能直接比较。
 
 SCL 的 `ETDM/A` 使用 `register_buffer` 保存，不进入优化器；梯度可以穿过
 SCL 回传到 LSTM，但不会修改 SCL 权重。
