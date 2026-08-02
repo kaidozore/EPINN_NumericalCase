@@ -43,8 +43,8 @@ def parse_args() -> argparse.Namespace:
         "--tbptt-length", type=int, default=500,
         help="Consecutive steps per truncated-backpropagation chunk.",
     )
-    parser.add_argument("--physics-ramp-epochs", type=int, default=100)
-    parser.add_argument("--physics-warmup-epochs", type=int, default=50)
+    parser.add_argument("--physics-ramp-epochs", type=int, default=300)
+    parser.add_argument("--physics-min-weight", type=float, default=1.0e-6)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument(
         "--device",
@@ -87,7 +87,6 @@ def main() -> None:
     force_scale = rms_scale(data.load[split.train])
     tensors = as_torch_case(data, device)
     train_dataset = DynAnaDataset(data, split.train, split.labelled)
-    warmup_dataset = DynAnaDataset(data, split.labelled, split.labelled)
     # Validation responses are never used by the optimizer, but they must be
     # labelled here so checkpoint selection reflects predictive accuracy.
     val_dataset = DynAnaDataset(data, split.validation, split.validation)
@@ -99,9 +98,6 @@ def main() -> None:
     }
     genTrain = DataLoader(
         train_dataset, shuffle=True, drop_last=True, **common_loader
-    )
-    genWarmup = DataLoader(
-        warmup_dataset, shuffle=True, drop_last=False, **common_loader
     )
     genVal = DataLoader(
         val_dataset, shuffle=False, drop_last=False, **common_loader
@@ -153,7 +149,7 @@ def main() -> None:
         "velocity_scale": velocity_scale.tolist(),
         "force_scale": force_scale.tolist(),
         "physics_ramp_epochs": args.physics_ramp_epochs,
-        "physics_warmup_epochs": args.physics_warmup_epochs,
+        "physics_min_weight": args.physics_min_weight,
         "gradient_clip": args.gradient_clip,
         "labelled_indices": split.labelled.tolist(),
     }
@@ -172,7 +168,6 @@ def main() -> None:
             optimizer=optimizer,
             epoch=epoch,
             genTrain=genTrain,
-            genWarmup=genWarmup,
             genVal=genVal,
             endEpoch=args.epochs,
             device=device,
@@ -180,7 +175,7 @@ def main() -> None:
             checkpoint_data=checkpoint_data,
             tbptt_length=args.tbptt_length,
             physics_ramp_epochs=args.physics_ramp_epochs,
-            physics_warmup_epochs=args.physics_warmup_epochs,
+            physics_min_weight=args.physics_min_weight,
             gradient_clip=args.gradient_clip,
         )
         lr_scheduler.step()

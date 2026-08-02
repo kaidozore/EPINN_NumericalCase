@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 
 import torch
 
@@ -86,37 +87,38 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
     optimizer: torch.optim.Optimizer,
     epoch: int,
     genTrain,
-    genWarmup,
     genVal,
     endEpoch: int,
     device: torch.device,
     checkpoint_dir: str | Path,
     checkpoint_data: dict,
     tbptt_length: int | None = None,
-    physics_ramp_epochs: int = 100,
-    physics_warmup_epochs: int = 50,
+    physics_ramp_epochs: int = 300,
+    physics_min_weight: float = 1.0e-6,
     gradient_clip: float | None = 1.0,
     save_period: int = 1,
 ) -> tuple[float, float]:
-    warmup = epoch < int(physics_warmup_epochs)
-    curriculum_epoch = max(0, epoch + 1 - int(physics_warmup_epochs))
+    if not 0.0 < physics_min_weight <= 1.0:
+        raise ValueError("physics_min_weight must be in (0, 1].")
     ramp_position = min(
-        1.0, curriculum_epoch / max(1, int(physics_ramp_epochs))
+        1.0,
+        epoch / max(1, int(physics_ramp_epochs) - 1),
     )
-    physics_fraction = ramp_position**2
+    physics_fraction = math.exp(
+        math.log(physics_min_weight) * (1.0 - ramp_position)
+    )
     modelLoss.set_physics_fraction(physics_fraction)
     train = _run_epoch(
         model,
         modelLoss,
-        genWarmup if warmup else genTrain,
+        genTrain,
         device,
         optimizer,
         tbptt_length,
         gradient_clip,
-        not warmup,
+        True,
     )
-    # Train and validation use the same stage objective.  During warmup both
-    # curves are supervised losses; the expensive constitutive path is skipped.
+    # Train and validation use the same nonzero physics weight at every epoch.
     modelLoss.set_physics_fraction(physics_fraction)
     val = _run_epoch(
         model,
@@ -126,7 +128,7 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
         None,
         tbptt_length,
         None,
-        not warmup,
+        True,
     )
     lossHistory.append_loss(
         epoch + 1,
@@ -140,20 +142,16 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
     )
     print(
         f"Epoch {epoch + 1}/{endEpoch} - "
-        f"stage: {'warmup' if warmup else 'physics'} - "
         f"loss: {train['total']:.6e} - val_loss: {val['total']:.6e} - "
         f"increment: {train['increment']:.3e} - "
         f"relative: {train['relative']:.3e} - "
         f"physics: {train['physics']:.3e} - "
-        f"physics_weight: {physics_fraction:.3f} - "
+        f"physics_weight: {physics_fraction:.3e} - "
         f"lr: {get_lr(optimizer):.3e}"
     )
     if (epoch + 1) % save_period == 0 or epoch + 1 == endEpoch:
-        stage_checkpoint_dir = Path(checkpoint_dir) / (
-            "warmup" if warmup else "physics"
-        )
         save_top_k_checkpoint(
-            stage_checkpoint_dir,
+            checkpoint_dir,
             {
                 **checkpoint_data,
                 "epoch": epoch + 1,
@@ -161,7 +159,6 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
                 "optimizer_state_dict": optimizer.state_dict(),
                 "train_loss": train["total"],
                 "val_loss": val["total"],
-                "training_stage": "warmup" if warmup else "physics",
                 "physics_weight": physics_fraction,
             },
             epoch=epoch + 1,

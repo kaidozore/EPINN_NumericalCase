@@ -83,11 +83,10 @@ python EPINN_MDOFSys_Train.py --data-root ..
 python PINN_MDOFSys_Train.py --data-root ..
 ```
 
-PINN采用阶段化训练。前`--physics-warmup-epochs`轮只遍历40个有标签样本，
-完全跳过Steel02和物理残差；训练与验证均记录同一定义的监督loss。warmup结束
-后切换到170个训练样本，并在`--physics-ramp-epochs`轮内平方渐增物理权重。
-两个阶段的最优模型分别保存在`checkpoints/warmup/`和
-`checkpoints/physics/`，避免不同loss定义的checkpoint互相竞争。
+PINN从第1轮开始使用全部170个训练样本计算物理残差，其中40个标签样本同时
+计算数据loss。物理权重从严格非零的`--physics-min-weight`开始，在
+`--physics-ramp-epochs`轮内按对数尺度平滑增加至1。训练和验证在每个epoch
+使用相同权重与loss定义，最优模型统一保存在`checkpoints/`。
 
 每个 epoch 的 `train_loss` 和 `val_loss` 写入当前时间戳目录下的
 `epoch_loss.csv`，同时覆盖更新 `epoch_loss.png`。程序每个 epoch 保存一个候选
