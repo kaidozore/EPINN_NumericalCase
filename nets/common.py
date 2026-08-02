@@ -435,6 +435,29 @@ def force_initial_zero(increment: torch.Tensor) -> torch.Tensor:
     )
 
 
+def increment_from_bounded_level(
+    level: torch.Tensor,
+    previous_level: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Form increments by differencing a bounded network state.
+
+    Directly accumulating 5000 independently predicted increments turns a
+    tiny output bias into an unbounded displacement drift.  Differencing a
+    learned level retains displacement-increment output and residual offsets,
+    while making the cumulative displacement telescope to a bounded state.
+    """
+
+    if level.ndim != 3 or level.shape[1] < 1:
+        raise ValueError("level must have shape [batch,time,dof].")
+    if previous_level is None:
+        first = torch.zeros_like(level[:, :1])
+    else:
+        if previous_level.shape != level[:, :1].shape:
+            raise ValueError("previous_level must have shape [batch,1,dof].")
+        first = level[:, :1] - previous_level
+    return torch.cat((first, level[:, 1:] - level[:, :-1]), dim=1)
+
+
 def central_difference(
     response: torch.Tensor, delta_t: float
 ) -> torch.Tensor:

@@ -70,6 +70,9 @@ def main() -> None:
             checkpoint["load_scale"], dtype=torch.float64
         ),
         increment_scale=config.displacement_increment_scale,
+        displacement_scale=float(
+            checkpoint.get("network_level_scale", config.displacement_scale)
+        ),
         hidden_size=checkpoint["hidden_size"],
         fc_size=checkpoint["fc_size"],
     ).double().to(device)

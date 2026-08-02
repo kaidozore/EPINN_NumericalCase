@@ -9,7 +9,7 @@ from nets.common import (
     FiberSteel02Module,
     LSTM_FC_Module,
     SCL_Module,
-    force_initial_zero,
+    increment_from_bounded_level,
 )
 
 
@@ -26,6 +26,7 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         steel: dict[str, float],
         load_scale: torch.Tensor,
         increment_scale: float = 1.0e-4,
+        displacement_scale: float | None = None,
         hidden_size: int = 120,
         fc_size: int = 120,
     ) -> None:
@@ -34,11 +35,15 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             raise ValueError("All five reduced DOFs carry nonlinear fiber force.")
         self.nLoad = nLoad
         self.nLoadNL = nLoadNL
-        self.increment_scale = float(increment_scale)
+        self.level_scale = float(
+            increment_scale if displacement_scale is None else displacement_scale
+        )
         self.register_buffer("load_scale", load_scale.reshape(1, 1, nLoad))
         self.LSTM_Module = LSTM_FC_Module(
             nLoad, nLoadNL, hidden_size, fc_size
         )
+        nn.init.zeros_(self.LSTM_Module.FC2.weight)
+        nn.init.zeros_(self.LSTM_Module.FC2.bias)
         self.Constitutive_Module = FiberSteel02Module(
             stiffness, fiber, steel
         )
@@ -48,10 +53,8 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         # Reference-code layout: [batch, 1, nLoad, timeLength].
         load_sequence = load.squeeze(1).transpose(1, 2)
         network_input = load_sequence / self.load_scale
-        increment_nl = self.LSTM_Module(network_input)
-        increment_nl = force_initial_zero(
-            increment_nl * self.increment_scale
-        )
+        level_nl = self.LSTM_Module(network_input) * self.level_scale
+        increment_nl = increment_from_bounded_level(level_nl)
         displacement_nl = torch.cumsum(increment_nl, dim=1)
         force_internal, force_nonlinear = self.Constitutive_Module(
             displacement_nl
@@ -88,21 +91,25 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         load_sequence = load.squeeze(1).transpose(1, 2)
         network_input = load_sequence / self.load_scale
         lstm_state = None if state is None else state["lstm"]
-        increment_nl, lstm_state = self.LSTM_Module(
+        level_nl, lstm_state = self.LSTM_Module(
             network_input, lstm_state, True
         )
-        increment_nl = increment_nl * self.increment_scale
+        level_nl = level_nl * self.level_scale
         if state is None:
-            increment_nl = force_initial_zero(increment_nl)
-            displacement0 = torch.zeros_like(increment_nl[:, :1])
+            previous_level = None
+            displacement0 = torch.zeros_like(level_nl[:, :1])
             material_state = None
             scl_history = None
             previous_scl_displacement = None
         else:
+            previous_level = state["network_level_nl"]
             displacement0 = state["displacement_nl"]
             material_state = state["material"]
             scl_history = state["scl_history"]
             previous_scl_displacement = state["scl_displacement"]
+        increment_nl = increment_from_bounded_level(
+            level_nl, previous_level
+        )
         displacement_nl = displacement0 + torch.cumsum(increment_nl, dim=1)
         force_internal, force_nonlinear, material_state = (
             self.Constitutive_Module.forward_chunk(
@@ -135,6 +142,7 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
                 for hidden, cell in lstm_state
             ),
             "displacement_nl": displacement_nl[:, -1:].detach(),
+            "network_level_nl": level_nl[:, -1:].detach(),
             "material": {
                 key: value.detach() for key, value in material_state.items()
             },

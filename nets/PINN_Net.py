@@ -8,7 +8,7 @@ import torch.nn as nn
 from nets.common import (
     FiberSteel02Module,
     LSTM_FC_Module,
-    force_initial_zero,
+    increment_from_bounded_level,
     newmark_average_acceleration_kinematics,
 )
 
@@ -26,6 +26,7 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         steel: dict[str, float],
         load_scale: torch.Tensor,
         increment_scale: float = 1.0e-4,
+        displacement_scale: float | torch.Tensor | None = None,
         hidden_size: int = 240,
         fc_size: int = 240,
     ) -> None:
@@ -33,16 +34,18 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         self.nLoad = nLoad
         self.nDOF = nDOF
         self.delta_t = float(delta_t)
-        increment_scale_tensor = torch.as_tensor(
-            increment_scale, dtype=load_scale.dtype, device=load_scale.device
+        level_scale_tensor = torch.as_tensor(
+            increment_scale if displacement_scale is None else displacement_scale,
+            dtype=load_scale.dtype,
+            device=load_scale.device,
         ).reshape(-1)
-        if increment_scale_tensor.numel() == 1:
-            increment_scale_tensor = increment_scale_tensor.expand(nDOF).clone()
-        if increment_scale_tensor.numel() != nDOF:
-            raise ValueError("increment_scale must be scalar or have nDOF entries.")
+        if level_scale_tensor.numel() == 1:
+            level_scale_tensor = level_scale_tensor.expand(nDOF).clone()
+        if level_scale_tensor.numel() != nDOF:
+            raise ValueError("displacement_scale must be scalar or have nDOF entries.")
         self.register_buffer(
-            "increment_scale_vector",
-            increment_scale_tensor.reshape(1, 1, nDOF),
+            "level_scale_vector",
+            level_scale_tensor.reshape(1, 1, nDOF),
         )
         self.register_buffer("load_scale", load_scale.reshape(1, 1, nLoad))
         self.LSTM_Module = LSTM_FC_Module(
@@ -60,8 +63,9 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
     def forward(self, load: torch.Tensor) -> dict[str, torch.Tensor]:
         load_sequence = load.squeeze(1).transpose(1, 2)
         network_input = load_sequence / self.load_scale
-        increment = force_initial_zero(
-            self.LSTM_Module(network_input) * self.increment_scale_vector
+        level = self.LSTM_Module(network_input) * self.level_scale_vector
+        increment = increment_from_bounded_level(
+            level
         )
         displacement = torch.cumsum(increment, dim=1)
         velocity, acceleration = newmark_average_acceleration_kinematics(
@@ -84,21 +88,23 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         load_sequence = load.squeeze(1).transpose(1, 2)
         network_input = load_sequence / self.load_scale
         lstm_state = None if state is None else state["lstm"]
-        increment, lstm_state = self.LSTM_Module(
+        level, lstm_state = self.LSTM_Module(
             network_input, lstm_state, True
         )
-        increment = increment * self.increment_scale_vector
+        level = level * self.level_scale_vector
         if state is None:
-            increment = force_initial_zero(increment)
-            displacement0 = torch.zeros_like(increment[:, :1])
-            velocity0 = torch.zeros_like(increment[:, :1])
-            acceleration0 = torch.zeros_like(increment[:, :1])
+            previous_level = None
+            displacement0 = torch.zeros_like(level[:, :1])
+            velocity0 = torch.zeros_like(level[:, :1])
+            acceleration0 = torch.zeros_like(level[:, :1])
             material_state = None
         else:
+            previous_level = state["network_level"]
             displacement0 = state["displacement"]
             velocity0 = state["velocity"]
             acceleration0 = state["acceleration"]
             material_state = state.get("material")
+        increment = increment_from_bounded_level(level, previous_level)
         displacement = displacement0 + torch.cumsum(increment, dim=1)
         velocity, acceleration = newmark_average_acceleration_kinematics(
             increment, self.delta_t, velocity0, acceleration0
@@ -118,6 +124,7 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
                 for hidden, cell in lstm_state
             ),
             "displacement": displacement[:, -1:].detach(),
+            "network_level": level[:, -1:].detach(),
             "velocity": velocity[:, -1:].detach(),
             "acceleration": acceleration[:, -1:].detach(),
             "material": (

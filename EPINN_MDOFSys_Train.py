@@ -94,6 +94,7 @@ def main() -> None:
         steel=tensors["steel"],
         load_scale=torch.as_tensor(load_scale, dtype=torch.float64),
         increment_scale=config.displacement_increment_scale,
+        displacement_scale=config.displacement_scale,
         hidden_size=args.hidden_size,
         fc_size=args.fc_size,
     ).double().to(device)
@@ -120,6 +121,7 @@ def main() -> None:
         "n_dof": int(data.displacement.shape[2]),
         "delta_t": data.delta_t,
         "tbptt_length": args.tbptt_length,
+        "network_level_scale": float(config.displacement_scale),
     }
 
     print(

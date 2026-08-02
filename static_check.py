@@ -220,6 +220,7 @@ def main() -> None:
         steel=tensors["steel"],
         load_scale=load_scale,
         increment_scale=config.displacement_increment_scale,
+        displacement_scale=config.displacement_scale,
         hidden_size=8,
         fc_size=8,
     )
@@ -234,6 +235,7 @@ def main() -> None:
         config.displacement_scale,
         config.velocity_scale,
         config.force_scale,
+        increment_scale=config.displacement_increment_scale,
     )(load, target, pinn_prediction)
     pinn_loss.backward()
     if not torch.isfinite(pinn_loss) or not finite_gradients(pinn):

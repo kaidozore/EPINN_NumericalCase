@@ -67,6 +67,10 @@ def main() -> None:
             checkpoint.get("increment_scale", config.displacement_increment_scale),
             dtype=torch.float64,
         ),
+        displacement_scale=torch.as_tensor(
+            checkpoint.get("network_level_scale", config.displacement_scale),
+            dtype=torch.float64,
+        ),
         hidden_size=checkpoint["hidden_size"],
         fc_size=checkpoint["fc_size"],
     ).double().to(device)

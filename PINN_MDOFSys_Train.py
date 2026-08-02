@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=10)
     parser.add_argument("--hidden-size", type=int, default=240)
     parser.add_argument("--fc-size", type=int, default=240)
-    parser.add_argument("--learning-rate", type=float, default=1.0e-3)
+    parser.add_argument("--learning-rate", type=float, default=1.0e-4)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--sequence-length", type=int, default=None)
     parser.add_argument(
@@ -113,6 +113,9 @@ def main() -> None:
         steel=tensors["steel"],
         load_scale=torch.as_tensor(load_scale, dtype=torch.float64),
         increment_scale=torch.as_tensor(increment_scale, dtype=torch.float64),
+        displacement_scale=torch.as_tensor(
+            displacement_scale, dtype=torch.float64
+        ),
         hidden_size=args.hidden_size,
         fc_size=args.fc_size,
     ).double().to(device)
@@ -149,6 +152,7 @@ def main() -> None:
         "increment_scale": increment_scale.tolist(),
         "displacement_scale": displacement_scale.tolist(),
         "velocity_scale": velocity_scale.tolist(),
+        "network_level_scale": displacement_scale.tolist(),
         "load_scale_fixed": float(config.force_scale),
         "increment_scale_fixed": float(config.displacement_increment_scale),
         "displacement_scale_fixed": float(config.displacement_scale),
