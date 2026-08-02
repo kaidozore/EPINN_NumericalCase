@@ -20,7 +20,6 @@ from utils.DataPreProcess import (
     as_torch_case,
     build_data_split,
     load_case_data,
-    load_scale_from_training,
 )
 from utils.utils import seed_everything
 from utils.utils_fit_EPINN import fitOneEpoch_EPINN_PhyLoss
@@ -65,7 +64,11 @@ def main() -> None:
 
     data = load_case_data(config)
     split = build_data_split(config, data.load.shape[0])
-    load_scale = load_scale_from_training(data.load, split.train)
+    # Use one fixed physical reference force for all samples and DOFs.  A
+    # doubled load therefore remains doubled after scaling.
+    load_scale = np.full(
+        data.load.shape[2], config.force_scale, dtype=np.float64
+    )
     tensors = as_torch_case(data, device)
     train_dataset = DynAnaDataset(data, split.train)
     val_dataset = DynAnaDataset(data, split.validation)

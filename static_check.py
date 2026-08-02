@@ -22,7 +22,6 @@ from utils.DataPreProcess import (
     as_torch_case,
     build_data_split,
     load_case_data,
-    load_scale_from_training,
 )
 
 
@@ -190,8 +189,8 @@ def main() -> None:
         raise AssertionError("ETDM/SCL reconstruction failed.")
     print(f"[PASS] ETDM/SCL reconstruction max error={scl_error:.3e}.")
 
-    load_scale = torch.as_tensor(
-        load_scale_from_training(data.load, split.train), dtype=torch.float64
+    load_scale = torch.full(
+        (n_dof,), config.force_scale, dtype=torch.float64
     )
     load = torch.as_tensor(
         data.load[:1, :check_steps].transpose(0, 2, 1)[:, None],

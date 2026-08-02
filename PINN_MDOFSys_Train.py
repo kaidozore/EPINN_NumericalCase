@@ -20,7 +20,6 @@ from utils.DataPreProcess import (
     as_torch_case,
     build_data_split,
     load_case_data,
-    load_scale_from_training,
 )
 from utils.utils import seed_everything
 from utils.utils_fit_PINN import (
@@ -44,8 +43,8 @@ def parse_args() -> argparse.Namespace:
         help="Consecutive steps per truncated-backpropagation chunk.",
     )
     parser.add_argument(
-        "--physics-weight", type=float, default=1.0,
-        help="Fixed weight of the dimensionless equation loss from epoch 1.",
+        "--physics-weight", type=float, default=1.0e-2,
+        help="Fixed weight of the scaled equation loss from epoch 1.",
     )
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument(
@@ -70,39 +69,23 @@ def main() -> None:
 
     data = load_case_data(config)
     split = build_data_split(config, data.load.shape[0])
-    load_scale = load_scale_from_training(data.load, split.train)
-    training_displacement = data.displacement[split.train]
-    training_increment = np.diff(
-        training_displacement,
-        axis=1,
-        prepend=np.zeros_like(training_displacement[:, :1]),
+    # Fixed engineering reference quantities are shared by every sample and
+    # every DOF.  No sample-wise, DOF-wise or dataset-derived RMS scaling is
+    # used, so proportional changes in load amplitude remain proportional at
+    # the network input and in the equation residual.
+    n_load = data.load.shape[2]
+    n_dof = data.displacement.shape[2]
+    load_scale = np.full(n_load, config.force_scale, dtype=np.float64)
+    increment_scale = np.full(
+        n_dof, config.displacement_increment_scale, dtype=np.float64
     )
-
-    def rms_scale(value: np.ndarray) -> np.ndarray:
-        return np.maximum(
-            np.sqrt(np.mean(np.square(value), axis=(0, 1))), 1.0e-12
-        )
-
-    increment_scale = rms_scale(training_increment)
-    displacement_scale = rms_scale(training_displacement)
-    velocity_scale = rms_scale(data.velocity[split.train])
-    external_force_scale = rms_scale(data.load[split.train])
-    # The first equation contains large K*u and nonlinear-force terms which
-    # cancel each other.  Scaling only by external load hides this cancellation
-    # and makes its gradient much larger than the supervised gradient.  Form a
-    # fixed per-DOF equation scale from the 40 labelled training samples only.
-    labelled = split.labelled
-    equation_terms = (
-        np.einsum("ij,btj->bti", data.mass, data.acceleration[labelled]),
-        np.einsum("ij,btj->bti", data.damping, data.velocity[labelled]),
-        np.einsum("ij,btj->bti", data.stiffness, data.displacement[labelled]),
-        data.nonlinear_force[labelled],
-        data.load[labelled],
+    displacement_scale = np.full(
+        n_dof, config.displacement_scale, dtype=np.float64
     )
-    physics_scale = np.sqrt(
-        sum(np.mean(np.square(term), axis=(0, 1)) for term in equation_terms)
+    velocity_scale = np.full(
+        n_dof, config.velocity_scale, dtype=np.float64
     )
-    physics_scale = np.maximum(physics_scale, 1.0e-12)
+    physics_scale = np.full(n_dof, config.force_scale, dtype=np.float64)
     tensors = as_torch_case(data, device)
     train_dataset = DynAnaDataset(data, split.train, split.labelled)
     # Validation responses are never used by the optimizer, but they must be
@@ -166,7 +149,10 @@ def main() -> None:
         "increment_scale": increment_scale.tolist(),
         "displacement_scale": displacement_scale.tolist(),
         "velocity_scale": velocity_scale.tolist(),
-        "external_force_scale": external_force_scale.tolist(),
+        "load_scale_fixed": float(config.force_scale),
+        "increment_scale_fixed": float(config.displacement_increment_scale),
+        "displacement_scale_fixed": float(config.displacement_scale),
+        "velocity_scale_fixed": float(config.velocity_scale),
         "physics_scale": physics_scale.tolist(),
         "physics_weight": args.physics_weight,
         "gradient_clip": args.gradient_clip,
@@ -179,9 +165,11 @@ def main() -> None:
         f"labelled training samples = {len(split.labelled)}"
     )
     print(
-        "Dimensionless scales: load RMS = "
-        f"{np.array2string(load_scale, precision=3)}; equation RMS = "
-        f"{np.array2string(physics_scale, precision=3)}"
+        "Fixed scales: load/equation force = "
+        f"{config.force_scale:.3e} N; displacement increment = "
+        f"{config.displacement_increment_scale:.3e} m; displacement = "
+        f"{config.displacement_scale:.3e} m; velocity = "
+        f"{config.velocity_scale:.3e} m/s"
     )
     start_time = time.time()
     for epoch in range(args.epochs):
