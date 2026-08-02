@@ -60,17 +60,21 @@ class PINN_MDOFSys_DisIncrement_LabPhyLoss(nn.Module):
         load: torch.Tensor,
         target: dict[str, torch.Tensor],
         prediction: dict[str, torch.Tensor],
+        compute_physics: bool = True,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        load_sequence = load.squeeze(1).transpose(1, 2)
-        residual = (
-            self._matrix_product(self.M, prediction["acc"])
-            + self._matrix_product(self.C, prediction["vel"])
-            + self._matrix_product(self.K, prediction["dis"])
-            + prediction["force_nonlinear"]
-            - load_sequence
-        ) / self.force_scale
-        # Central-difference boundary values are less accurate.
-        physics_loss = torch.mean(residual[:, 2:-2, :].pow(2))
+        if compute_physics:
+            load_sequence = load.squeeze(1).transpose(1, 2)
+            residual = (
+                self._matrix_product(self.M, prediction["acc"])
+                + self._matrix_product(self.C, prediction["vel"])
+                + self._matrix_product(self.K, prediction["dis"])
+                + prediction["force_nonlinear"]
+                - load_sequence
+            ) / self.force_scale
+            # Central-difference boundary values are less accurate.
+            physics_loss = torch.mean(residual[:, 2:-2, :].pow(2))
+        else:
+            physics_loss = prediction["dis"].new_zeros(())
 
         labelled = target["labelled"].bool()
         if torch.any(labelled):

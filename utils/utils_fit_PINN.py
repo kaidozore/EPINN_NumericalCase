@@ -18,6 +18,7 @@ def _run_epoch(
     optimizer: torch.optim.Optimizer | None,
     tbptt_length: int | None,
     gradient_clip: float | None,
+    compute_physics: bool,
 ) -> tuple[float, float, float]:
     training = optimizer is not None
     model.train(training)
@@ -50,8 +51,15 @@ def _run_epoch(
                 }
                 if training:
                     optimizer.zero_grad(set_to_none=True)
-                prediction, state = model.forward_chunk(load_chunk, state)
-                loss, parts = modelLoss(load_chunk, target_chunk, prediction)
+                prediction, state = model.forward_chunk(
+                    load_chunk, state, compute_physics=compute_physics
+                )
+                loss, parts = modelLoss(
+                    load_chunk,
+                    target_chunk,
+                    prediction,
+                    compute_physics=compute_physics,
+                )
                 if training:
                     loss.backward()
                     if gradient_clip is not None:
@@ -78,6 +86,7 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
     optimizer: torch.optim.Optimizer,
     epoch: int,
     genTrain,
+    genWarmup,
     genVal,
     endEpoch: int,
     device: torch.device,
@@ -89,6 +98,7 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
     gradient_clip: float | None = 1.0,
     save_period: int = 1,
 ) -> tuple[float, float]:
+    warmup = epoch < int(physics_warmup_epochs)
     curriculum_epoch = max(0, epoch + 1 - int(physics_warmup_epochs))
     ramp_position = min(
         1.0, curriculum_epoch / max(1, int(physics_ramp_epochs))
@@ -96,14 +106,27 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
     physics_fraction = ramp_position**2
     modelLoss.set_physics_fraction(physics_fraction)
     train = _run_epoch(
-        model, modelLoss, genTrain, device, optimizer, tbptt_length,
+        model,
+        modelLoss,
+        genWarmup if warmup else genTrain,
+        device,
+        optimizer,
+        tbptt_length,
         gradient_clip,
+        not warmup,
     )
-    # Keep validation losses comparable across curriculum epochs and suitable
-    # for top-k checkpoint retention.
-    modelLoss.set_physics_fraction(1.0)
+    # Train and validation use the same stage objective.  During warmup both
+    # curves are supervised losses; the expensive constitutive path is skipped.
+    modelLoss.set_physics_fraction(physics_fraction)
     val = _run_epoch(
-        model, modelLoss, genVal, device, None, tbptt_length, None
+        model,
+        modelLoss,
+        genVal,
+        device,
+        None,
+        tbptt_length,
+        None,
+        not warmup,
     )
     lossHistory.append_loss(
         epoch + 1,
@@ -112,10 +135,12 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
         {
             **{f"train_{key}": value for key, value in train.items() if key != "total"},
             **{f"val_{key}": value for key, value in val.items() if key != "total"},
+            "physics_weight": physics_fraction,
         },
     )
     print(
         f"Epoch {epoch + 1}/{endEpoch} - "
+        f"stage: {'warmup' if warmup else 'physics'} - "
         f"loss: {train['total']:.6e} - val_loss: {val['total']:.6e} - "
         f"increment: {train['increment']:.3e} - "
         f"relative: {train['relative']:.3e} - "
@@ -124,8 +149,11 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
         f"lr: {get_lr(optimizer):.3e}"
     )
     if (epoch + 1) % save_period == 0 or epoch + 1 == endEpoch:
+        stage_checkpoint_dir = Path(checkpoint_dir) / (
+            "warmup" if warmup else "physics"
+        )
         save_top_k_checkpoint(
-            checkpoint_dir,
+            stage_checkpoint_dir,
             {
                 **checkpoint_data,
                 "epoch": epoch + 1,
@@ -133,6 +161,8 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
                 "optimizer_state_dict": optimizer.state_dict(),
                 "train_loss": train["total"],
                 "val_loss": val["total"],
+                "training_stage": "warmup" if warmup else "physics",
+                "physics_weight": physics_fraction,
             },
             epoch=epoch + 1,
             train_loss=train["total"],

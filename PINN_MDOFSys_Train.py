@@ -87,6 +87,7 @@ def main() -> None:
     force_scale = rms_scale(data.load[split.train])
     tensors = as_torch_case(data, device)
     train_dataset = DynAnaDataset(data, split.train, split.labelled)
+    warmup_dataset = DynAnaDataset(data, split.labelled, split.labelled)
     # Validation responses are never used by the optimizer, but they must be
     # labelled here so checkpoint selection reflects predictive accuracy.
     val_dataset = DynAnaDataset(data, split.validation, split.validation)
@@ -98,6 +99,9 @@ def main() -> None:
     }
     genTrain = DataLoader(
         train_dataset, shuffle=True, drop_last=True, **common_loader
+    )
+    genWarmup = DataLoader(
+        warmup_dataset, shuffle=True, drop_last=False, **common_loader
     )
     genVal = DataLoader(
         val_dataset, shuffle=False, drop_last=False, **common_loader
@@ -168,6 +172,7 @@ def main() -> None:
             optimizer=optimizer,
             epoch=epoch,
             genTrain=genTrain,
+            genWarmup=genWarmup,
             genVal=genVal,
             endEpoch=args.epochs,
             device=device,

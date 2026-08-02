@@ -78,7 +78,7 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
             "force_nonlinear": force_nonlinear,
         }
 
-    def forward_chunk(self, load, state=None):
+    def forward_chunk(self, load, state=None, compute_physics: bool = True):
         """Evaluate one consecutive TBPTT chunk and return detached history."""
         load_sequence = load.squeeze(1).transpose(1, 2)
         network_input = load_sequence / self.load_scale
@@ -93,24 +93,34 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
             material_state = None
         else:
             displacement0 = state["displacement"]
-            material_state = state["material"]
+            material_state = state.get("material")
         displacement = displacement0 + torch.cumsum(increment, dim=1)
         velocity = central_difference(displacement, self.delta_t)
-        acceleration = central_difference(velocity, self.delta_t)
-        force_internal, force_nonlinear, material_state = (
-            self.Constitutive_Module.forward_chunk(
-                displacement, material_state
+        if compute_physics:
+            acceleration = central_difference(velocity, self.delta_t)
+            force_internal, force_nonlinear, material_state = (
+                self.Constitutive_Module.forward_chunk(
+                    displacement, material_state
+                )
             )
-        )
+        else:
+            acceleration = None
+            force_internal = None
+            force_nonlinear = None
         next_state = {
             "lstm": tuple(
                 (hidden.detach(), cell.detach())
                 for hidden, cell in lstm_state
             ),
             "displacement": displacement[:, -1:].detach(),
-            "material": {
-                key: value.detach() for key, value in material_state.items()
-            },
+            "material": (
+                None
+                if material_state is None
+                else {
+                    key: value.detach()
+                    for key, value in material_state.items()
+                }
+            ),
         }
         return {
             "dis_increment": increment,
