@@ -3,3 +3,4 @@ h5py>=3.8
 scipy>=1.10
 torch>=2.1
 matplotlib>=3.7
+ninja>=1.11

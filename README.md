@@ -52,6 +52,18 @@ python static_check.py --data-root E:\MDOF_case
 pip install -r python/requirements.txt
 ```
 
+`ninja` 是编译 Steel02 自定义 C++/CUDA 扩展的必需依赖，已经列入
+`requirements.txt`。可单独检查：
+
+```bash
+python -c "import ninja; print(ninja.__version__)"
+ninja --version
+```
+
+首次在 CUDA 设备上运行时会编译扩展，成功后终端显示
+`Steel02 CUDA extension loaded successfully.`；后续运行复用
+`extensions/_build_cuda/` 中的构建缓存。
+
 先用短序列确认 CUDA 环境：
 
 ```bash
