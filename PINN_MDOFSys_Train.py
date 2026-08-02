@@ -35,7 +35,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=10)
     parser.add_argument("--hidden-size", type=int, default=240)
     parser.add_argument("--fc-size", type=int, default=240)
-    parser.add_argument("--learning-rate", type=float, default=1.0e-3)
+    parser.add_argument("--learning-rate", type=float, default=5.0e-4)
+    parser.add_argument("--lr-patience", type=int, default=10)
+    parser.add_argument("--lr-factor", type=float, default=0.5)
+    parser.add_argument("--min-learning-rate", type=float, default=1.0e-5)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--sequence-length", type=int, default=None)
     parser.add_argument(
@@ -102,7 +105,11 @@ def main() -> None:
         ),
     }
     tensors = as_torch_case(data, device)
-    train_dataset = DynAnaDataset(data, split.train, split.labelled)
+    # Full-data diagnostic: all 170 training responses are supervised while
+    # every one of them also retains the equation-of-motion loss.  This makes
+    # each shuffled batch fully labelled and removes label-count fluctuations.
+    supervised_indices = split.train
+    train_dataset = DynAnaDataset(data, split.train, supervised_indices)
     # Validation responses are never used by the optimizer, but they must be
     # labelled here so checkpoint selection reflects predictive accuracy.
     val_dataset = DynAnaDataset(data, split.validation, split.validation)
@@ -143,11 +150,13 @@ def main() -> None:
         increment_scale=torch.as_tensor(increment_scale, dtype=torch.float64),
         physics_weight=args.physics_weight,
     ).double().to(device)
-    optimizer = optim.Adam(
-        model.parameters(), lr=args.learning_rate, weight_decay=5.0e-4
-    )
-    lr_scheduler = optim.lr_scheduler.StepLR(
-        optimizer, step_size=8, gamma=0.98
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=args.lr_factor,
+        patience=args.lr_patience,
+        min_lr=args.min_learning_rate,
     )
 
     log_root = Path(__file__).resolve().parent / "logs" / "PINN_PhyLSTM3"
@@ -172,14 +181,21 @@ def main() -> None:
         "physics_scale": physics_scale.tolist(),
         "physics_weight": args.physics_weight,
         "gradient_clip": args.gradient_clip,
-        "labelled_indices": split.labelled.tolist(),
+        "labelled_indices": supervised_indices.tolist(),
+        "full_data_supervision": True,
+        "lr_scheduler": {
+            "name": "ReduceLROnPlateau",
+            "patience": args.lr_patience,
+            "factor": args.lr_factor,
+            "min_lr": args.min_learning_rate,
+        },
         "zero_response_baseline": zero_response_baseline,
     }
 
     print(
         f"Device: {device}; train/validation/test = "
         f"{len(split.train)}/{len(split.validation)}/{len(split.test)}; "
-        f"labelled training samples = {len(split.labelled)}"
+        f"labelled training samples = {len(supervised_indices)} (full data)"
     )
     print(
         "Fixed scales: load/equation force = "
@@ -195,7 +211,7 @@ def main() -> None:
     )
     start_time = time.time()
     for epoch in range(args.epochs):
-        fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
+        _, validation_loss = fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
             model=model,
             modelLoss=modelLoss,
             lossHistory=lossHistory,
@@ -210,7 +226,7 @@ def main() -> None:
             tbptt_length=args.tbptt_length,
             gradient_clip=args.gradient_clip,
         )
-        lr_scheduler.step()
+        lr_scheduler.step(validation_loss)
     print(f"PINN training time: {time.time() - start_time:.2f} s")
 
 

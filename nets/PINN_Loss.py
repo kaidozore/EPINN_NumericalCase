@@ -7,7 +7,7 @@ import torch.nn as nn
 
 
 class PINN_MDOFSys_DisIncrement_LabPhyLoss(nn.Module):
-    """Hybrid loss with 40 labelled samples and physics on every sample."""
+    """Displacement/increment data loss plus physics on every sample."""
 
     def __init__(
         self,
