@@ -16,7 +16,7 @@ from nets.common import (
 )
 from nets.EPINN_Loss import EPINN_MDOFSys_DisIncrement_PhyLoss
 from nets.EPINN_Net import EPINN_PhyLSTM_NetBody
-from nets.PINN_Loss import PINN_MDOFSys_DisIncrement_LabPhyLoss
+from nets.PINN_Loss import PINN_MDOFSys_DisIncrement_PhyLoss
 from nets.PINN_Net import PINN_PhyLSTM3_DisIncrement_NetBody
 from utils.DataPreProcess import (
     as_torch_case,
@@ -193,23 +193,6 @@ def main() -> None:
         data.load[:1, :check_steps].transpose(0, 2, 1)[:, None],
         dtype=torch.float64,
     )
-    target = {
-        "dis": torch.as_tensor(
-            data.displacement[:1, :check_steps], dtype=torch.float64
-        ),
-        "dis_increment": torch.as_tensor(
-            np.diff(
-                data.displacement[:1, :check_steps],
-                axis=1,
-                prepend=np.zeros_like(data.displacement[:1, :1]),
-            ),
-            dtype=torch.float64,
-        ),
-        "vel": torch.as_tensor(
-            data.velocity[:1, :check_steps], dtype=torch.float64
-        ),
-        "labelled": torch.tensor([True]),
-    }
     common = dict(
         nLoad=n_dof,
         stiffness=tensors["stiffness"],
@@ -217,7 +200,7 @@ def main() -> None:
         fiber=tensors["fiber"],
         steel=tensors["steel"],
         input_increment_scale=config.displacement_increment_scale,
-        displacement_scale=config.displacement_scale,
+        output_increment_scale=config.displacement_increment_scale,
         hidden_size=8,
         fc_size=8,
     )
@@ -225,14 +208,9 @@ def main() -> None:
         nDOF=n_dof, delta_t=data.delta_t, **common
     ).double()
     pinn_prediction = pinn(load)
-    pinn_loss, _ = PINN_MDOFSys_DisIncrement_LabPhyLoss(
-        tensors["mass"],
-        tensors["damping"],
-        tensors["stiffness"],
-        config.displacement_scale,
-        config.force_scale,
-        increment_scale=config.displacement_increment_scale,
-    )(load, target, pinn_prediction)
+    pinn_loss = PINN_MDOFSys_DisIncrement_PhyLoss(
+        tensors["mass"], tensors["damping"]
+    )(load, pinn_prediction)
     pinn_loss.backward()
     if not torch.isfinite(pinn_loss) or not finite_gradients(pinn):
         raise AssertionError("PINN forward/backward check failed.")
@@ -243,9 +221,7 @@ def main() -> None:
         **common,
     ).double()
     epinn_prediction = epinn(load)
-    epinn_loss = EPINN_MDOFSys_DisIncrement_PhyLoss(
-        config.displacement_increment_scale
-    )(epinn_prediction)
+    epinn_loss = EPINN_MDOFSys_DisIncrement_PhyLoss()(epinn_prediction)
     epinn_loss.backward()
     if not torch.isfinite(epinn_loss) or not finite_gradients(epinn):
         raise AssertionError("E-PINN forward/backward check failed.")

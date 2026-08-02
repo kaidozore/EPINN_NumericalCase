@@ -1,137 +1,80 @@
 # 5 自由度纤维梁 PINN / E-PINN
 
-本工程读取 `E:\MDOF_case` 中 MATLAB 已生成的 5 自由度数据。Python 不重新
-组装 `M、C、K0`，也不生成波浪荷载。
+本工程读取 `E:\MDOF_case` 中 MATLAB 已生成的荷载、结构矩阵、Steel02
+纤维参数和 ETDM 核。Python 不重新生成波浪荷载，也不重新组装 `M、C、K0`
+或 ETDM 权重。
 
-## MATLAB 输入
+## 数据文件
 
-- `wave_loads_300.mat`：读取 `Fwave、time、M、C、K0`，并从 `cfg` 读取缩聚
-  变换、单元自由度、纤维划分、Gauss 积分点及 Steel02 参数。
-- `wave_responses_newmark_300.mat`：读取监督标签 `U、V、Acc` 和校核量
-  `FintFull`。
-- `wave_responses_etdm_300.mat`：读取 `ETDM/A`、`Fnonlinear` 以及
-  ETDM 参考响应。
+- `wave_loads_300.mat`：`Fwave、time、M、C、K0` 及纤维梁参数。
+- `wave_responses_newmark_300.mat`：MATLAB 响应，只供最终精度评估，不参与训练 loss。
+- `wave_responses_etdm_300.mat`：固定的 `ETDM/A` 和参考响应。
 
-h5py 读取后的时程统一为 `[sample, time, 5]`。当前正式 MATLAB 文件需要重新
-生成 300 个样本后再进行论文训练；目录中已有的 5 个样本可以用于接口检查。
-不足 200 个样本的调试数据会保留最后 1 个样本作为独立测试集；300 样本正式
-数据仍严格采用 170/30/100 划分。
+## 网络与 loss
 
-## 模型
+PINN 和 E-PINN 均采用三层 LSTM（层间无 ReLU），随后连接
+`FC -> ReLU -> FC`。原单位波浪荷载首先进入权重固定的 SCL，按初始刚度
+得到弹性位移增量；该增量除以固定的 `0.1 m` 后作为 LSTM 输入。LSTM 直接
+输出结构的弹塑性位移增量，不再预测弹性解的修正量或残差。网络输出乘固定
+的 `0.1 m` 恢复物理单位。
 
-两种模型均采用三层 LSTM，LSTM 层之间没有 ReLU；其后为
-`FC -> ReLU -> FC`。
+- PINN：累计预测增量得到位移，用 Newmark 平均加速度关系恢复速度和加速度，
+  再由 Steel02 纤维梁得到总恢复力 `Fint`。唯一的训练目标为
+  `mean((M*a + C*v + Fint - Fwave)^2)`。
+- E-PINN：由预测位移计算非线性恢复力并送入固定 SCL；唯一的训练目标为
+  `mean((du_LSTM - du_SCL)^2)`。
 
-- PINN 预测 5 个平移自由度的位移增量，累加得到位移，并通过可微 Steel02
-  纤维梁模块计算 `Fint` 与 `g=Fint-K0*u`。物理残差为
-  `M*a+C*v+K0*u+g-P`。
-- E-PINN 预测 5 个位移增量，通过相同的纤维梁模块计算 5 维 `g`，再把
-  `[P,g]` 输入由 MATLAB `ETDM/A` 固定构造的 SCL。MATLAB 已在
-  `LF=[I,-I]` 中包含负号，因此 Python 不重复改变 `g` 的符号。
+以上两个 loss 都是物理单位下残差的直接 MSE，不使用标签 loss、响应全量
+loss、额外权重或数据集 RMS 缩放。PINN loss 的单位为 `N^2`，E-PINN loss
+的单位为 `m^2`，因此两者的数值大小不能直接比较。
 
-MATLAB 强制保存 `Fwave(:,1,:)=0`，且初始状态和 `Fnonlinear(:,1,:)` 均为零，
-因此 SCL 只加载 `ETDM/A` 作为固定权重，不读取 `T、Q1、Q2`。
+SCL 的 `ETDM/A` 使用 `register_buffer` 保存，不进入优化器；梯度可以穿过
+SCL 回传到 LSTM，但不会修改 SCL 权重。
 
-## 本地静态检查
-
-静态检查不会执行优化器更新或正式训练：
-
-```powershell
-python static_check.py --data-root E:\MDOF_case
-```
-
-检查内容包括 MATLAB 字段与维度、Steel02 完整时程恢复力、Aij/SCL 排列与
-符号、PINN 前向/损失/反向和 E-PINN 前向/损失/反向。
-
-## AutoDL 训练
-
-在 AutoDL 中上传整个 `MDOF_case`（或使用 `--data-root` 指向三个 MATLAB
-文件所在目录），安装依赖：
+## 安装与静态检查
 
 ```bash
-pip install -r python/requirements.txt
+pip install -r requirements.txt
+python static_check.py --data-root ..
 ```
 
-`ninja` 是编译 Steel02 自定义 C++/CUDA 扩展的必需依赖，已经列入
-`requirements.txt`。可单独检查：
+`ninja` 已列入依赖，用于编译 Steel02 C++/CUDA 扩展。终端显示
+`Steel02 CUDA extension loaded successfully.` 即代表扩展加载成功。
+
+静态检查验证 MATLAB 数据维度、Newmark 运动学、Steel02 恢复力及切线、
+ETDM/SCL 重构、两种模型的前向/反向和 TBPTT 状态连续性，不执行优化器更新。
+
+## 训练
+
+先用短序列检查运行环境：
 
 ```bash
-python -c "import ninja; print(ninja.__version__)"
-ninja --version
+python PINN_MDOFSys_Train.py --data-root .. --epochs 1 --batch-size 2 \
+  --sequence-length 64 --tbptt-length 64 --hidden-size 8 --fc-size 8
+
+python EPINN_MDOFSys_Train.py --data-root .. --epochs 1 --batch-size 2 \
+  --sequence-length 64 --tbptt-length 64 --time-truncation 64 \
+  --hidden-size 8 --fc-size 8
 ```
 
-首次在 CUDA 设备上运行时会编译扩展，成功后终端显示
-`Steel02 CUDA extension loaded successfully.`；后续运行复用
-`extensions/_build_cuda/` 中的构建缓存。
-对于计算能力 8.9 的 Ada 显卡，如果系统 NVCC 低于 CUDA 11.8，加载器会自动
-改用 `8.6+PTX` 前向兼容编译，避免 `Unsupported gpu architecture
-'compute_89'`。
-
-先用短序列确认 CUDA 环境：
+正式训练：
 
 ```bash
-cd python
-python static_check.py --data-root .. --check-steps 32 --constitutive-steps 200
-python EPINN_MDOFSys_Train.py --data-root .. --epochs 1 --batch-size 2 --sequence-length 64 --time-truncation 64
-python PINN_MDOFSys_Train.py --data-root .. --epochs 1 --batch-size 2 --sequence-length 64
+python PINN_MDOFSys_Train.py --data-root .. --epochs 1000 \
+  --batch-size 10 --tbptt-length 500
+
+python EPINN_MDOFSys_Train.py --data-root .. --epochs 1000 \
+  --batch-size 10 --tbptt-length 500
 ```
 
-短测试通过后，去掉 `--sequence-length` 开展完整时程训练：
+每轮的训练和验证 loss 写入时间戳目录中的 `epoch_loss.csv`，并更新
+`epoch_loss.png`。每种方法只保留验证 loss 最小的 10 个 checkpoint。
+
+## 预测
+
+架构已经改变，不能加载此前“弹性增量 + 修正量”架构保存的 checkpoint。
 
 ```bash
-python EPINN_MDOFSys_Train.py --data-root ..
-python PINN_MDOFSys_Train.py --data-root ..
-```
-
-PINN当前采用全数据诊断设置：170个训练样本从第1轮开始全部同时计算数据loss
-和物理残差。E-PINN的训练样本定义保持不变。位移增量、位移和方程力分别采用
-`config.py`给定的固定工程尺度，不进行逐样本、逐自由度或训练集RMS缩放。
-运动方程从第1轮起以固定`--physics-weight`（默认1e-6）作用于全部训练样本。
-最优模型按验证集纯数据loss统一保存在`checkpoints/`。
-
-PINN和E-PINN的LSTM不再直接接收缩放后的波浪力。原单位波浪荷载先进入权重
-固定的SCL，并令非线性恢复力为0，得到基于初始刚度的全弹性位移；相邻时刻作差
-得到弹性位移增量，再统一除以固定0.1 m后作为LSTM输入。波浪荷载本身不做任何
-RMS或比例缩放。300样本中弹性增量与目标弹塑性增量的逐自由度RMS几乎一致。
-最终预测采用固定残差连接`弹性位移增量 + LSTM非线性修正增量`，因此无标签
-训练从全弹性解而不是零响应开始。训练启动时同时打印零响应和全弹性响应的验证
-基准，便于判断网络是否真正学到了非线性修正。
-
-PINN可用`--supervision full|partial|none`选择170个全标签、原40个标签或无标签
-纯物理训练；默认值为`full`。`none`模式的学习率调度、loss曲线及checkpoint选择
-只使用验证物理残差，不使用验证响应标签。响应RMSE仍会单独打印用于诊断。
-例如小网络无标签检查可运行：
-
-```bash
-python PINN_MDOFSys_Train.py --data-root .. --epochs 3 --batch-size 2 \
-  --sequence-length 500 --tbptt-length 500 --hidden-size 8 --fc-size 8 \
-  --supervision none --physics-weight 1
-```
-
-网络最终输出仍为位移增量，但由相邻有界位移状态之差得到，累计后严格回到该
-位移状态；该参数化可保留残余位移，同时避免5000个独立增量中的微小均值误差
-累积成非物理漂移。
-
-PINN默认学习率为`5e-4`且不使用weight decay；`ReduceLROnPlateau`在验证损失
-连续10轮没有改善时将学习率减半，最低降至`1e-5`。有界状态差分消除了独立增量
-的长时程累积漂移，输出层
-采用非零默认初始化，使梯度从首轮即可传至全部LSTM/FC层。固定物理权重`1e-6`
-用于平衡初始阶段约`1e6`量级的原始物理MSE；该权重不随epoch变化。
-
-PINN优化目标简化为`increment_loss + displacement_loss + 1e-6 *
-physics_loss`。其中前两项分别采用0.1 m和0.5 m固定尺度后的MSE。日志、loss
-曲线及checkpoint排序使用统一的纯数据损失`increment_loss +
-displacement_loss`，因此训练与验证曲线可直接比较；physics loss单独写入CSV。
-控制台同时输出验证集位移`val_u_RMSE`，单位为m。
-
-每个 epoch 的 `train_loss` 和 `val_loss` 写入当前时间戳目录下的
-`epoch_loss.csv`，同时覆盖更新 `epoch_loss.png`。程序每个 epoch 保存一个候选
-检查点，再按照 `val_loss` 排序，在本次训练的 `checkpoints` 文件夹中只保留
-最小的 10 个 `.pth`；其他历史时间戳训练目录不会自动删除。
-
-预测脚本读取训练生成的 `.pth` 文件：
-
-```bash
-python EPINN_MDOFSys_Predict.py checkpoint.pth --data-root ..
 python PINN_MDOFSys_Predict.py checkpoint.pth --data-root ..
+python EPINN_MDOFSys_Predict.py checkpoint.pth --data-root ..
 ```

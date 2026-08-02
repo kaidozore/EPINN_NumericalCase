@@ -71,8 +71,10 @@ def main() -> None:
                 "input_increment_scale", config.displacement_increment_scale
             )
         ),
-        displacement_scale=float(
-            checkpoint.get("network_level_scale", config.displacement_scale)
+        output_increment_scale=float(
+            checkpoint.get(
+                "output_increment_scale", config.displacement_increment_scale
+            )
         ),
         hidden_size=checkpoint["hidden_size"],
         fc_size=checkpoint["fc_size"],

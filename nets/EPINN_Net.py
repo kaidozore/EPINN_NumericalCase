@@ -10,7 +10,7 @@ from nets.common import (
     FiberSteel02Module,
     LSTM_FC_Module,
     SCL_Module,
-    increment_from_bounded_level,
+    force_initial_zero,
 )
 
 
@@ -26,7 +26,7 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         fiber: dict[str, torch.Tensor],
         steel: dict[str, float],
         input_increment_scale: float = 1.0e-1,
-        displacement_scale: float | None = None,
+        output_increment_scale: float | None = None,
         hidden_size: int = 120,
         fc_size: int = 120,
     ) -> None:
@@ -35,8 +35,10 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             raise ValueError("All five reduced DOFs carry nonlinear fiber force.")
         self.nLoad = nLoad
         self.nLoadNL = nLoadNL
-        self.level_scale = float(
-            input_increment_scale if displacement_scale is None else displacement_scale
+        self.output_increment_scale = float(
+            input_increment_scale
+            if output_increment_scale is None
+            else output_increment_scale
         )
         self.ElasticInput_Module = ElasticIncrementInput(
             influence_kernel, nLoad, input_increment_scale
@@ -44,8 +46,6 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         self.LSTM_Module = LSTM_FC_Module(
             nLoad, nLoadNL, hidden_size, fc_size
         )
-        nn.init.xavier_uniform_(self.LSTM_Module.FC2.weight, gain=1.0e-2)
-        nn.init.zeros_(self.LSTM_Module.FC2.bias)
         self.Constitutive_Module = FiberSteel02Module(
             stiffness, fiber, steel
         )
@@ -57,9 +57,9 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         network_input, elastic_increment, elastic_displacement = (
             self.ElasticInput_Module(load_sequence)
         )
-        correction_level = self.LSTM_Module(network_input) * self.level_scale
-        correction_increment = increment_from_bounded_level(correction_level)
-        increment_nl = elastic_increment + correction_increment
+        increment_nl = force_initial_zero(
+            self.LSTM_Module(network_input) * self.output_increment_scale
+        )
         displacement_nl = torch.cumsum(increment_nl, dim=1)
         force_internal, force_nonlinear = self.Constitutive_Module(
             displacement_nl
@@ -82,7 +82,6 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         )
         return {
             "dis_increment_nl": increment_nl,
-            "correction_dis_increment": correction_increment,
             "elastic_dis_increment": elastic_increment,
             "elastic_dis": elastic_displacement,
             "dis_nl": displacement_nl,
@@ -107,26 +106,21 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             load_sequence, elastic_state
         )
         lstm_state = None if state is None else state["lstm"]
-        correction_level, lstm_state = self.LSTM_Module(
+        increment_nl, lstm_state = self.LSTM_Module(
             network_input, lstm_state, True
         )
-        correction_level = correction_level * self.level_scale
+        increment_nl = increment_nl * self.output_increment_scale
         if state is None:
-            previous_level = None
-            displacement0 = torch.zeros_like(correction_level[:, :1])
+            increment_nl = force_initial_zero(increment_nl)
+            displacement0 = torch.zeros_like(increment_nl[:, :1])
             material_state = None
             scl_history = None
             previous_scl_displacement = None
         else:
-            previous_level = state["network_level_nl"]
             displacement0 = state["displacement_nl"]
             material_state = state["material"]
             scl_history = state["scl_history"]
             previous_scl_displacement = state["scl_displacement"]
-        correction_increment = increment_from_bounded_level(
-            correction_level, previous_level
-        )
-        increment_nl = elastic_increment + correction_increment
         displacement_nl = displacement0 + torch.cumsum(increment_nl, dim=1)
         force_internal, force_nonlinear, material_state = (
             self.Constitutive_Module.forward_chunk(
@@ -160,7 +154,6 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             ),
             "elastic": elastic_state,
             "displacement_nl": displacement_nl[:, -1:].detach(),
-            "network_level_nl": correction_level[:, -1:].detach(),
             "material": {
                 key: value.detach() for key, value in material_state.items()
             },
@@ -169,7 +162,6 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         }
         return {
             "dis_increment_nl": increment_nl,
-            "correction_dis_increment": correction_increment,
             "elastic_dis_increment": elastic_increment,
             "elastic_dis": elastic_displacement,
             "dis_nl": displacement_nl,

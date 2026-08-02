@@ -2,64 +2,43 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 import torch
 
 from utils.callbacks import LossHistory, save_top_k_checkpoint
-from utils.utils import get_lr, move_target
+from utils.utils import get_lr
 
 
 def _run_epoch(
     model: torch.nn.Module,
-    modelLoss: torch.nn.Module,
+    model_loss: torch.nn.Module,
     loader,
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
     tbptt_length: int | None,
     gradient_clip: float | None,
-    compute_physics: bool,
-) -> dict[str, float]:
+) -> float:
     training = optimizer is not None
     model.train(training)
-    data_keys = (
-        "data", "increment", "displacement",
-        "increment_mse_physical", "displacement_mse_physical",
-    )
-    totals = {key: 0.0 for key in (*data_keys, "physics")}
-    data_count = 0
-    physics_count = 0
+    total = 0.0
+    count = 0
     context = torch.enable_grad() if training else torch.no_grad()
     with context:
-        for loads, target in loader:
+        for loads, _ in loader:
             loads = loads.to(device)
-            target = move_target(target, device)
             total_steps = loads.shape[-1]
             chunk_length = total_steps if tbptt_length is None else tbptt_length
             state = None
             for start in range(0, total_steps, chunk_length):
                 stop = min(start + chunk_length, total_steps)
                 load_chunk = loads[..., start:stop]
-                target_chunk = {
-                    key: (
-                        value[:, start:stop]
-                        if value.ndim >= 2 and value.shape[1] == total_steps
-                        else value
-                    )
-                    for key, value in target.items()
-                }
                 if training:
                     optimizer.zero_grad(set_to_none=True)
                 prediction, state = model.forward_chunk(
-                    load_chunk, state, compute_physics=compute_physics
+                    load_chunk, state, compute_physics=True
                 )
-                loss, parts = modelLoss(
-                    load_chunk,
-                    target_chunk,
-                    prediction,
-                    compute_physics=compute_physics,
-                )
+                loss = model_loss(load_chunk, prediction)
                 if training:
                     loss.backward()
                     if gradient_clip is not None:
@@ -67,36 +46,15 @@ def _run_epoch(
                             model.parameters(), gradient_clip
                         )
                     optimizer.step()
-                steps = stop - start
-                labelled_count = int(target_chunk["labelled"].bool().sum())
-                labelled_weight = labelled_count * steps
-                all_sample_weight = loads.shape[0] * steps
-                if labelled_weight > 0:
-                    for key in data_keys:
-                        totals[key] += float(parts[key]) * labelled_weight
-                    data_count += labelled_weight
-                totals["physics"] += float(parts["physics"]) * all_sample_weight
-                physics_count += all_sample_weight
-    if physics_count == 0:
+                weight = loads.shape[0] * (stop - start)
+                total += float(loss.detach()) * weight
+                count += weight
+    if count == 0:
         raise ValueError("The data loader did not produce any batches.")
-    has_data = data_count > 0
-    result = {
-        key: (totals[key] / data_count if has_data else 0.0)
-        for key in data_keys
-    }
-    result["physics"] = totals["physics"] / physics_count
-    result["total"] = (
-        result["data"] + modelLoss.current_physics_weight * result["physics"]
-    )
-    result["has_data"] = float(has_data)
-    result["increment_rmse_m"] = math.sqrt(result["increment_mse_physical"])
-    result["displacement_rmse_m"] = math.sqrt(
-        result["displacement_mse_physical"]
-    )
-    return result
+    return total / count
 
 
-def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
+def fitOneEpoch_PINN_DisIncrement_PhyLoss(
     model: torch.nn.Module,
     modelLoss: torch.nn.Module,
     lossHistory: LossHistory,
@@ -111,56 +69,18 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
     tbptt_length: int | None = None,
     gradient_clip: float | None = 1.0,
     save_period: int = 1,
-    selection_metric: str = "data",
 ) -> tuple[float, float]:
-    if selection_metric not in ("data", "physics"):
-        raise ValueError("selection_metric must be 'data' or 'physics'.")
-    # The equation is already nondimensionalized, so every training sample
-    # uses the complete fixed physics loss from the first epoch.
-    physics_fraction = modelLoss.physics_weight
-    modelLoss.set_physics_fraction(1.0)
-    train = _run_epoch(
-        model,
-        modelLoss,
-        genTrain,
-        device,
-        optimizer,
-        tbptt_length,
-        gradient_clip,
-        True,
+    train_loss = _run_epoch(
+        model, modelLoss, genTrain, device, optimizer,
+        tbptt_length, gradient_clip,
     )
-    modelLoss.set_physics_fraction(1.0)
-    val = _run_epoch(
-        model,
-        modelLoss,
-        genVal,
-        device,
-        None,
-        tbptt_length,
-        None,
-        True,
+    val_loss = _run_epoch(
+        model, modelLoss, genVal, device, None, tbptt_length, None,
     )
-    train_curve_loss = train[selection_metric]
-    val_curve_loss = val[selection_metric]
-    lossHistory.append_loss(
-        epoch + 1,
-        train_curve_loss,
-        val_curve_loss,
-        {
-            **{f"train_{key}": value for key, value in train.items()},
-            **{f"val_{key}": value for key, value in val.items()},
-            "physics_weight": physics_fraction,
-        },
-    )
+    lossHistory.append_loss(epoch + 1, train_loss, val_loss)
     print(
         f"Epoch {epoch + 1}/{endEpoch} - "
-        f"loss: {train_curve_loss:.6e} - val_loss: {val_curve_loss:.6e} - "
-        f"increment: {train['increment']:.3e} - "
-        f"displacement: {train['displacement']:.3e} - "
-        f"physics: {train['physics']:.3e} - "
-        f"val_physics: {val['physics']:.3e} - "
-        f"val_u_RMSE: {val['displacement_rmse_m']:.3e} m - "
-        f"physics_weight: {physics_fraction:.3e} - "
+        f"loss: {train_loss:.6e} - val_loss: {val_loss:.6e} - "
         f"lr: {get_lr(optimizer):.3e}"
     )
     if (epoch + 1) % save_period == 0 or epoch + 1 == endEpoch:
@@ -171,18 +91,12 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "train_loss": train_curve_loss,
-                "val_loss": val_curve_loss,
-                "selection_metric": selection_metric,
-                "train_total_loss": train["total"],
-                "val_physics_loss": val["physics"],
-                "val_displacement_rmse_m": val["displacement_rmse_m"],
-                "val_increment_rmse_m": val["increment_rmse_m"],
-                "physics_weight": physics_fraction,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
             },
             epoch=epoch + 1,
-            train_loss=train_curve_loss,
-            val_loss=val_curve_loss,
+            train_loss=train_loss,
+            val_loss=val_loss,
             max_to_keep=10,
         )
-    return train_curve_loss, val_curve_loss
+    return train_loss, val_loss

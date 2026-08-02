@@ -89,13 +89,11 @@ def main() -> None:
         fiber=tensors["fiber"],
         steel=tensors["steel"],
         input_increment_scale=config.displacement_increment_scale,
-        displacement_scale=config.displacement_scale,
+        output_increment_scale=config.displacement_increment_scale,
         hidden_size=args.hidden_size,
         fc_size=args.fc_size,
     ).double().to(device)
-    modelLoss = EPINN_MDOFSys_DisIncrement_PhyLoss(
-        config.displacement_increment_scale
-    ).double().to(device)
+    modelLoss = EPINN_MDOFSys_DisIncrement_PhyLoss().double().to(device)
     optimizer = optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=5.0e-4
     )
@@ -110,6 +108,8 @@ def main() -> None:
         "method": "EPINN",
         "case_config": config.to_dict(),
         "network_input": "elastic_displacement_increment_from_fixed_SCL",
+        "network_output": "nonlinear_total_displacement_increment",
+        "loss": "mean((LSTM_increment-SCL_increment)^2)",
         "input_increment_scale": float(config.displacement_increment_scale),
         "hidden_size": args.hidden_size,
         "fc_size": args.fc_size,
@@ -117,12 +117,16 @@ def main() -> None:
         "n_dof": int(data.displacement.shape[2]),
         "delta_t": data.delta_t,
         "tbptt_length": args.tbptt_length,
-        "network_level_scale": float(config.displacement_scale),
+        "output_increment_scale": float(config.displacement_increment_scale),
     }
 
     print(
         f"Device: {device}; train/validation/test = "
         f"{len(split.train)}/{len(split.validation)}/{len(split.test)}"
+    )
+    print(
+        "E-PINN: elastic displacement increments -> LSTM -> nonlinear total "
+        "increments; loss = MSE(LSTM increment - SCL increment)."
     )
     start_time = time.time()
     for epoch in range(args.epochs):
