@@ -42,8 +42,6 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         self.LSTM_Module = LSTM_FC_Module(
             nLoad, nLoadNL, hidden_size, fc_size
         )
-        nn.init.zeros_(self.LSTM_Module.FC2.weight)
-        nn.init.zeros_(self.LSTM_Module.FC2.bias)
         self.Constitutive_Module = FiberSteel02Module(
             stiffness, fiber, steel
         )

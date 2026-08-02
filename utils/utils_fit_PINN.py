@@ -150,6 +150,7 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
         f"increment: {train['increment']:.3e} - "
         f"displacement: {train['displacement']:.3e} - "
         f"physics: {train['physics']:.3e} - "
+        f"val_physics: {val['physics']:.3e} - "
         f"val_u_RMSE: {val['displacement_rmse_m']:.3e} m - "
         f"physics_weight: {physics_fraction:.3e} - "
         f"lr: {get_lr(optimizer):.3e}"

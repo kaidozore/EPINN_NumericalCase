@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=10)
     parser.add_argument("--hidden-size", type=int, default=240)
     parser.add_argument("--fc-size", type=int, default=240)
-    parser.add_argument("--learning-rate", type=float, default=1.0e-4)
+    parser.add_argument("--learning-rate", type=float, default=1.0e-3)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--sequence-length", type=int, default=None)
     parser.add_argument(
@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
         help="Consecutive steps per truncated-backpropagation chunk.",
     )
     parser.add_argument(
-        "--physics-weight", type=float, default=1.0e-2,
+        "--physics-weight", type=float, default=1.0e-6,
         help="Fixed weight of the scaled equation loss from epoch 1.",
     )
     parser.add_argument("--gradient-clip", type=float, default=1.0)
@@ -83,6 +83,24 @@ def main() -> None:
         n_dof, config.displacement_scale, dtype=np.float64
     )
     physics_scale = np.full(n_dof, config.force_scale, dtype=np.float64)
+    validation_displacement = data.displacement[split.validation]
+    validation_increment = np.diff(
+        validation_displacement,
+        axis=1,
+        prepend=np.zeros_like(validation_displacement[:, :1]),
+    )
+    zero_response_baseline = {
+        "val_loss": float(
+            np.mean(np.square(validation_increment / config.displacement_increment_scale))
+            + np.mean(np.square(validation_displacement / config.displacement_scale))
+        ),
+        "val_physics": float(
+            np.mean(np.square(data.load[split.validation] / config.force_scale))
+        ),
+        "val_displacement_rmse_m": float(
+            np.sqrt(np.mean(np.square(validation_displacement)))
+        ),
+    }
     tensors = as_torch_case(data, device)
     train_dataset = DynAnaDataset(data, split.train, split.labelled)
     # Validation responses are never used by the optimizer, but they must be
@@ -155,6 +173,7 @@ def main() -> None:
         "physics_weight": args.physics_weight,
         "gradient_clip": args.gradient_clip,
         "labelled_indices": split.labelled.tolist(),
+        "zero_response_baseline": zero_response_baseline,
     }
 
     print(
@@ -167,6 +186,12 @@ def main() -> None:
         f"{config.force_scale:.3e} N; displacement increment = "
         f"{config.displacement_increment_scale:.3e} m; displacement = "
         f"{config.displacement_scale:.3e} m"
+    )
+    print(
+        "Zero-response validation baseline: loss = "
+        f"{zero_response_baseline['val_loss']:.6e}; physics = "
+        f"{zero_response_baseline['val_physics']:.6e}; u_RMSE = "
+        f"{zero_response_baseline['val_displacement_rmse_m']:.6e} m"
     )
     start_time = time.time()
     for epoch in range(args.epochs):

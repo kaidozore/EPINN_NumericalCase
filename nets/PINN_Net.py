@@ -51,11 +51,10 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         self.LSTM_Module = LSTM_FC_Module(
             nLoad, nDOF, hidden_size, fc_size
         )
-        # A generic random output produces a small biased increment which is
-        # amplified by a 5000-step cumulative sum.  Start from the exact zero
-        # response; FC2 begins learning on the first optimizer update.
-        nn.init.zeros_(self.LSTM_Module.FC2.weight)
-        nn.init.zeros_(self.LSTM_Module.FC2.bias)
+        # Increments are now differences of a bounded level, so the default
+        # Linear initialization is safe and lets gradients reach all LSTM/FC
+        # layers from the first update.  Zero-initializing FC2 here collapses
+        # the long-history network to the exact zero-response baseline.
         self.Constitutive_Module = FiberSteel02Module(
             stiffness, fiber, steel
         )
