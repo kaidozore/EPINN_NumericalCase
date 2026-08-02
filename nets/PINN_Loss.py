@@ -15,13 +15,10 @@ class PINN_MDOFSys_DisIncrement_LabPhyLoss(nn.Module):
         damping: torch.Tensor,
         stiffness: torch.Tensor,
         displacement_scale=2.0e-3,
-        velocity_scale=1.0e-2,
         force_scale=1.0e2,
         increment_scale=1.0e-4,
         increment_weight: float = 1.0,
-        relative_weight: float = 0.5,
-        displacement_weight: float = 0.1,
-        velocity_weight: float = 0.1,
+        displacement_weight: float = 1.0,
         physics_weight: float = 1.0,
     ) -> None:
         super().__init__()
@@ -36,13 +33,10 @@ class PINN_MDOFSys_DisIncrement_LabPhyLoss(nn.Module):
                 result = result.expand(mass.shape[0]).clone()
             return result.reshape(1, 1, -1)
         self.register_buffer("displacement_scale", scale_tensor(displacement_scale))
-        self.register_buffer("velocity_scale", scale_tensor(velocity_scale))
         self.register_buffer("force_scale", scale_tensor(force_scale))
         self.register_buffer("increment_scale", scale_tensor(increment_scale))
         self.increment_weight = float(increment_weight)
-        self.relative_weight = float(relative_weight)
         self.displacement_weight = float(displacement_weight)
-        self.velocity_weight = float(velocity_weight)
         self.physics_weight = float(physics_weight)
         self.current_physics_weight = float(physics_weight)
 
@@ -82,49 +76,39 @@ class PINN_MDOFSys_DisIncrement_LabPhyLoss(nn.Module):
                 - target["dis_increment"][labelled]
             ) / self.increment_scale
             increment_loss = torch.mean(increment_error.pow(2))
-            relative_error = (
-                torch.cumsum(prediction["dis_increment"][labelled], dim=1)
-                - torch.cumsum(target["dis_increment"][labelled], dim=1)
-            ) / self.displacement_scale
-            relative_loss = torch.mean(relative_error.pow(2))
+            displacement_error_physical = (
+                prediction["dis"][labelled] - target["dis"][labelled]
+            )
             dis_loss = torch.mean(
+                (displacement_error_physical / self.displacement_scale).pow(2)
+            )
+            increment_mse_physical = torch.mean(
                 (
-                    (
-                        prediction["dis"][labelled]
-                        - target["dis"][labelled]
-                    )
-                    / self.displacement_scale
+                    prediction["dis_increment"][labelled]
+                    - target["dis_increment"][labelled]
                 ).pow(2)
             )
-            vel_loss = torch.mean(
-                (
-                    (
-                        prediction["vel"][labelled]
-                        - target["vel"][labelled]
-                    )
-                    / self.velocity_scale
-                ).pow(2)
+            displacement_mse_physical = torch.mean(
+                displacement_error_physical.pow(2)
             )
-            label_loss = (
+            data_loss = (
                 self.increment_weight * increment_loss
-                + self.relative_weight * relative_loss
                 + self.displacement_weight * dis_loss
-                + self.velocity_weight * vel_loss
             )
         else:
             increment_loss = physics_loss.new_zeros(())
-            relative_loss = physics_loss.new_zeros(())
             dis_loss = physics_loss.new_zeros(())
-            vel_loss = physics_loss.new_zeros(())
-            label_loss = physics_loss.new_zeros(())
-        total = label_loss + self.current_physics_weight * physics_loss
+            increment_mse_physical = physics_loss.new_zeros(())
+            displacement_mse_physical = physics_loss.new_zeros(())
+            data_loss = physics_loss.new_zeros(())
+        total = data_loss + self.current_physics_weight * physics_loss
         return total, {
-            "label": label_loss.detach(),
+            "data": data_loss.detach(),
             "physics": physics_loss.detach(),
             "increment": increment_loss.detach(),
-            "relative": relative_loss.detach(),
             "displacement": dis_loss.detach(),
-            "velocity": vel_loss.detach(),
+            "increment_mse_physical": increment_mse_physical.detach(),
+            "displacement_mse_physical": displacement_mse_physical.detach(),
             "physics_fraction": physics_loss.new_tensor(
                 self.current_physics_weight
             ),

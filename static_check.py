@@ -233,7 +233,6 @@ def main() -> None:
         tensors["damping"],
         tensors["stiffness"],
         config.displacement_scale,
-        config.velocity_scale,
         config.force_scale,
         increment_scale=config.displacement_increment_scale,
     )(load, target, pinn_prediction)

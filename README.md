@@ -97,6 +97,12 @@ PINN从第1轮开始使用全部170个训练样本计算物理残差，其中40�
 PINN默认学习率为`1e-4`；完整5000步时不建议重新提高到`1e-3`，后者会因
 刚度项梯度较大而在训练批次之间产生明显震荡。
 
+PINN优化目标简化为`increment_loss + displacement_loss + 0.01 *
+physics_loss`。其中前两项分别采用0.1 m和0.5 m固定尺度后的MSE。日志、loss
+曲线及checkpoint排序使用统一的纯数据损失`increment_loss +
+displacement_loss`，因此训练与验证曲线可直接比较；physics loss单独写入CSV。
+控制台同时输出验证集位移`val_u_RMSE`，单位为m。
+
 每个 epoch 的 `train_loss` 和 `val_loss` 写入当前时间戳目录下的
 `epoch_loss.csv`，同时覆盖更新 `epoch_loss.png`。程序每个 epoch 保存一个候选
 检查点，再按照 `val_loss` 排序，在本次训练的 `checkpoints` 文件夹中只保留

@@ -82,9 +82,6 @@ def main() -> None:
     displacement_scale = np.full(
         n_dof, config.displacement_scale, dtype=np.float64
     )
-    velocity_scale = np.full(
-        n_dof, config.velocity_scale, dtype=np.float64
-    )
     physics_scale = np.full(n_dof, config.force_scale, dtype=np.float64)
     tensors = as_torch_case(data, device)
     train_dataset = DynAnaDataset(data, split.train, split.labelled)
@@ -124,7 +121,6 @@ def main() -> None:
         damping=tensors["damping"],
         stiffness=tensors["stiffness"],
         displacement_scale=torch.as_tensor(displacement_scale, dtype=torch.float64),
-        velocity_scale=torch.as_tensor(velocity_scale, dtype=torch.float64),
         force_scale=torch.as_tensor(physics_scale, dtype=torch.float64),
         increment_scale=torch.as_tensor(increment_scale, dtype=torch.float64),
         physics_weight=args.physics_weight,
@@ -151,12 +147,10 @@ def main() -> None:
         "tbptt_length": args.tbptt_length,
         "increment_scale": increment_scale.tolist(),
         "displacement_scale": displacement_scale.tolist(),
-        "velocity_scale": velocity_scale.tolist(),
         "network_level_scale": displacement_scale.tolist(),
         "load_scale_fixed": float(config.force_scale),
         "increment_scale_fixed": float(config.displacement_increment_scale),
         "displacement_scale_fixed": float(config.displacement_scale),
-        "velocity_scale_fixed": float(config.velocity_scale),
         "physics_scale": physics_scale.tolist(),
         "physics_weight": args.physics_weight,
         "gradient_clip": args.gradient_clip,
@@ -172,8 +166,7 @@ def main() -> None:
         "Fixed scales: load/equation force = "
         f"{config.force_scale:.3e} N; displacement increment = "
         f"{config.displacement_increment_scale:.3e} m; displacement = "
-        f"{config.displacement_scale:.3e} m; velocity = "
-        f"{config.velocity_scale:.3e} m/s"
+        f"{config.displacement_scale:.3e} m"
     )
     start_time = time.time()
     for epoch in range(args.epochs):

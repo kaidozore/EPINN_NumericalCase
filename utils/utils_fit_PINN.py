@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import torch
@@ -19,17 +20,16 @@ def _run_epoch(
     tbptt_length: int | None,
     gradient_clip: float | None,
     compute_physics: bool,
-) -> tuple[float, float, float]:
+) -> dict[str, float]:
     training = optimizer is not None
     model.train(training)
-    totals = {
-        key: 0.0
-        for key in (
-            "total", "label", "physics", "increment", "relative",
-            "displacement", "velocity",
-        )
-    }
-    count = 0
+    data_keys = (
+        "data", "increment", "displacement",
+        "increment_mse_physical", "displacement_mse_physical",
+    )
+    totals = {key: 0.0 for key in (*data_keys, "physics")}
+    data_count = 0
+    physics_count = 0
     context = torch.enable_grad() if training else torch.no_grad()
     with context:
         for loads, target in loader:
@@ -67,16 +67,30 @@ def _run_epoch(
                             model.parameters(), gradient_clip
                         )
                     optimizer.step()
-                weight = stop - start
-                totals["total"] += float(loss.detach()) * weight
-                totals["label"] += float(parts["label"]) * weight
-                totals["physics"] += float(parts["physics"]) * weight
-                for key in ("increment", "relative", "displacement", "velocity"):
-                    totals[key] += float(parts[key]) * weight
-                count += weight
-    if count == 0:
+                steps = stop - start
+                labelled_count = int(target_chunk["labelled"].bool().sum())
+                labelled_weight = labelled_count * steps
+                all_sample_weight = loads.shape[0] * steps
+                if labelled_weight > 0:
+                    for key in data_keys:
+                        totals[key] += float(parts[key]) * labelled_weight
+                    data_count += labelled_weight
+                totals["physics"] += float(parts["physics"]) * all_sample_weight
+                physics_count += all_sample_weight
+    if physics_count == 0 or data_count == 0:
         raise ValueError("The data loader did not produce any batches.")
-    return {key: value / count for key, value in totals.items()}
+    result = {
+        key: totals[key] / data_count for key in data_keys
+    }
+    result["physics"] = totals["physics"] / physics_count
+    result["total"] = (
+        result["data"] + modelLoss.current_physics_weight * result["physics"]
+    )
+    result["increment_rmse_m"] = math.sqrt(result["increment_mse_physical"])
+    result["displacement_rmse_m"] = math.sqrt(
+        result["displacement_mse_physical"]
+    )
+    return result
 
 
 def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
@@ -122,20 +136,21 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
     )
     lossHistory.append_loss(
         epoch + 1,
-        train["total"],
-        val["total"],
+        train["data"],
+        val["data"],
         {
-            **{f"train_{key}": value for key, value in train.items() if key != "total"},
-            **{f"val_{key}": value for key, value in val.items() if key != "total"},
+            **{f"train_{key}": value for key, value in train.items()},
+            **{f"val_{key}": value for key, value in val.items()},
             "physics_weight": physics_fraction,
         },
     )
     print(
         f"Epoch {epoch + 1}/{endEpoch} - "
-        f"loss: {train['total']:.6e} - val_loss: {val['total']:.6e} - "
+        f"loss: {train['data']:.6e} - val_loss: {val['data']:.6e} - "
         f"increment: {train['increment']:.3e} - "
-        f"relative: {train['relative']:.3e} - "
+        f"displacement: {train['displacement']:.3e} - "
         f"physics: {train['physics']:.3e} - "
+        f"val_u_RMSE: {val['displacement_rmse_m']:.3e} m - "
         f"physics_weight: {physics_fraction:.3e} - "
         f"lr: {get_lr(optimizer):.3e}"
     )
@@ -147,13 +162,17 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "train_loss": train["total"],
-                "val_loss": val["total"],
+                "train_loss": train["data"],
+                "val_loss": val["data"],
+                "train_total_loss": train["total"],
+                "val_physics_loss": val["physics"],
+                "val_displacement_rmse_m": val["displacement_rmse_m"],
+                "val_increment_rmse_m": val["increment_rmse_m"],
                 "physics_weight": physics_fraction,
             },
             epoch=epoch + 1,
-            train_loss=train["total"],
-            val_loss=val["total"],
+            train_loss=train["data"],
+            val_loss=val["data"],
             max_to_keep=10,
         )
-    return train["total"], val["total"]
+    return train["data"], val["data"]
