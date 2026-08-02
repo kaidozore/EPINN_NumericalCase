@@ -77,15 +77,18 @@ def _run_epoch(
                     data_count += labelled_weight
                 totals["physics"] += float(parts["physics"]) * all_sample_weight
                 physics_count += all_sample_weight
-    if physics_count == 0 or data_count == 0:
+    if physics_count == 0:
         raise ValueError("The data loader did not produce any batches.")
+    has_data = data_count > 0
     result = {
-        key: totals[key] / data_count for key in data_keys
+        key: (totals[key] / data_count if has_data else 0.0)
+        for key in data_keys
     }
     result["physics"] = totals["physics"] / physics_count
     result["total"] = (
         result["data"] + modelLoss.current_physics_weight * result["physics"]
     )
+    result["has_data"] = float(has_data)
     result["increment_rmse_m"] = math.sqrt(result["increment_mse_physical"])
     result["displacement_rmse_m"] = math.sqrt(
         result["displacement_mse_physical"]
@@ -108,7 +111,10 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
     tbptt_length: int | None = None,
     gradient_clip: float | None = 1.0,
     save_period: int = 1,
+    selection_metric: str = "data",
 ) -> tuple[float, float]:
+    if selection_metric not in ("data", "physics"):
+        raise ValueError("selection_metric must be 'data' or 'physics'.")
     # The equation is already nondimensionalized, so every training sample
     # uses the complete fixed physics loss from the first epoch.
     physics_fraction = modelLoss.physics_weight
@@ -134,10 +140,12 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
         None,
         True,
     )
+    train_curve_loss = train[selection_metric]
+    val_curve_loss = val[selection_metric]
     lossHistory.append_loss(
         epoch + 1,
-        train["data"],
-        val["data"],
+        train_curve_loss,
+        val_curve_loss,
         {
             **{f"train_{key}": value for key, value in train.items()},
             **{f"val_{key}": value for key, value in val.items()},
@@ -146,7 +154,7 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
     )
     print(
         f"Epoch {epoch + 1}/{endEpoch} - "
-        f"loss: {train['data']:.6e} - val_loss: {val['data']:.6e} - "
+        f"loss: {train_curve_loss:.6e} - val_loss: {val_curve_loss:.6e} - "
         f"increment: {train['increment']:.3e} - "
         f"displacement: {train['displacement']:.3e} - "
         f"physics: {train['physics']:.3e} - "
@@ -163,8 +171,9 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "train_loss": train["data"],
-                "val_loss": val["data"],
+                "train_loss": train_curve_loss,
+                "val_loss": val_curve_loss,
+                "selection_metric": selection_metric,
                 "train_total_loss": train["total"],
                 "val_physics_loss": val["physics"],
                 "val_displacement_rmse_m": val["displacement_rmse_m"],
@@ -172,8 +181,8 @@ def fitOneEpoch_PINN_DisIncrement_LabPhyLoss(
                 "physics_weight": physics_fraction,
             },
             epoch=epoch + 1,
-            train_loss=train["data"],
-            val_loss=val["data"],
+            train_loss=train_curve_loss,
+            val_loss=val_curve_loss,
             max_to_keep=10,
         )
-    return train["data"], val["data"]
+    return train_curve_loss, val_curve_loss

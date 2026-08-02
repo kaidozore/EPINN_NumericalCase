@@ -6,7 +6,6 @@ import argparse
 import time
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -66,9 +65,6 @@ def main() -> None:
     split = build_data_split(config, data.load.shape[0])
     # Use one fixed physical reference force for all samples and DOFs.  A
     # doubled load therefore remains doubled after scaling.
-    load_scale = np.full(
-        data.load.shape[2], config.force_scale, dtype=np.float64
-    )
     tensors = as_torch_case(data, device)
     train_dataset = DynAnaDataset(data, split.train)
     val_dataset = DynAnaDataset(data, split.validation)
@@ -92,8 +88,7 @@ def main() -> None:
         stiffness=tensors["stiffness"],
         fiber=tensors["fiber"],
         steel=tensors["steel"],
-        load_scale=torch.as_tensor(load_scale, dtype=torch.float64),
-        increment_scale=config.displacement_increment_scale,
+        input_increment_scale=config.displacement_increment_scale,
         displacement_scale=config.displacement_scale,
         hidden_size=args.hidden_size,
         fc_size=args.fc_size,
@@ -114,7 +109,8 @@ def main() -> None:
     checkpoint_data = {
         "method": "EPINN",
         "case_config": config.to_dict(),
-        "load_scale": load_scale.tolist(),
+        "network_input": "elastic_displacement_increment_from_fixed_SCL",
+        "input_increment_scale": float(config.displacement_increment_scale),
         "hidden_size": args.hidden_size,
         "fc_size": args.fc_size,
         "n_load": int(data.load.shape[2]),

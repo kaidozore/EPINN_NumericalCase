@@ -427,6 +427,91 @@ class SCL_Module(nn.Module):
         return state.transpose(1, 2)
 
 
+class ElasticIncrementInput(nn.Module):
+    """Map raw physical wave load to fixed-scale elastic increments by SCL."""
+
+    def __init__(
+        self,
+        influence_kernel: torch.Tensor,
+        n_dof: int,
+        increment_scale: float | torch.Tensor,
+    ) -> None:
+        super().__init__()
+        self.n_dof = int(n_dof)
+        self.SCL_Module = SCL_Module(influence_kernel)
+        scale = torch.as_tensor(
+            increment_scale,
+            dtype=influence_kernel.dtype,
+            device=influence_kernel.device,
+        ).reshape(-1)
+        if scale.numel() == 1:
+            scale = scale.expand(self.n_dof).clone()
+        if scale.numel() != self.n_dof or torch.any(scale <= 0.0):
+            raise ValueError("increment_scale must contain positive DOF scales.")
+        self.register_buffer("increment_scale", scale.reshape(1, 1, -1))
+
+    @staticmethod
+    def _difference(
+        displacement: torch.Tensor,
+        previous_displacement: torch.Tensor | None,
+    ) -> torch.Tensor:
+        first = (
+            torch.zeros_like(displacement[:, :1])
+            if previous_displacement is None
+            else displacement[:, :1] - previous_displacement
+        )
+        return torch.cat(
+            (first, displacement[:, 1:] - displacement[:, :-1]), dim=1
+        )
+
+    def forward(
+        self, load_sequence: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # SCL weights have physical units and therefore receive the original
+        # wave load in N.  Zero nonlinear restoring force gives the response
+        # of the structure with its initial elastic stiffness.
+        elastic_input = torch.cat(
+            (load_sequence, torch.zeros_like(load_sequence)), dim=2
+        )
+        state = self.SCL_Module(elastic_input)
+        displacement = state[:, :, : self.n_dof]
+        increment = self._difference(displacement, None)
+        return increment / self.increment_scale, increment, displacement
+
+    def forward_chunk(
+        self,
+        load_sequence: torch.Tensor,
+        state: dict[str, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        elastic_input = torch.cat(
+            (load_sequence, torch.zeros_like(load_sequence)), dim=2
+        )
+        history = None if state is None else state["history"]
+        previous_displacement = (
+            None if state is None else state["displacement"]
+        )
+        scl_input = (
+            elastic_input
+            if history is None
+            else torch.cat((history, elastic_input), dim=1)
+        )
+        state_total = self.SCL_Module(scl_input)
+        structural_state = state_total[:, -elastic_input.shape[1] :]
+        displacement = structural_state[:, :, : self.n_dof]
+        increment = self._difference(displacement, previous_displacement)
+        history_length = self.SCL_Module.timeTrun - 1
+        next_state = {
+            "history": scl_input[:, -history_length:].detach(),
+            "displacement": displacement[:, -1:].detach(),
+        }
+        return (
+            increment / self.increment_scale,
+            increment,
+            displacement,
+            next_state,
+        )
+
+
 def force_initial_zero(increment: torch.Tensor) -> torch.Tensor:
     """Impose the known zero-displacement initial condition exactly."""
 

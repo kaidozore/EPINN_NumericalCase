@@ -189,9 +189,6 @@ def main() -> None:
         raise AssertionError("ETDM/SCL reconstruction failed.")
     print(f"[PASS] ETDM/SCL reconstruction max error={scl_error:.3e}.")
 
-    load_scale = torch.full(
-        (n_dof,), config.force_scale, dtype=torch.float64
-    )
     load = torch.as_tensor(
         data.load[:1, :check_steps].transpose(0, 2, 1)[:, None],
         dtype=torch.float64,
@@ -216,10 +213,10 @@ def main() -> None:
     common = dict(
         nLoad=n_dof,
         stiffness=tensors["stiffness"],
+        influence_kernel=tensors["kernel"],
         fiber=tensors["fiber"],
         steel=tensors["steel"],
-        load_scale=load_scale,
-        increment_scale=config.displacement_increment_scale,
+        input_increment_scale=config.displacement_increment_scale,
         displacement_scale=config.displacement_scale,
         hidden_size=8,
         fc_size=8,
@@ -243,7 +240,6 @@ def main() -> None:
 
     epinn = EPINN_PhyLSTM_NetBody(
         nLoadNL=n_dof,
-        influence_kernel=tensors["kernel"],
         **common,
     ).double()
     epinn_prediction = epinn(load)
@@ -262,8 +258,14 @@ def main() -> None:
     chunk_length = max(3, check_steps // 2)
     with torch.no_grad():
         for name, model, keys in (
-            ("PINN", pinn, ("dis", "vel", "acc", "force_nonlinear")),
-            ("E-PINN", epinn, ("dis_nl", "force_nonlinear", "dis")),
+            (
+                "PINN", pinn,
+                ("elastic_dis_increment", "dis", "vel", "acc", "force_nonlinear"),
+            ),
+            (
+                "E-PINN", epinn,
+                ("elastic_dis_increment", "dis_nl", "force_nonlinear", "dis"),
+            ),
         ):
             whole = model(load)
             chunk_state = None

@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from nets.common import (
+    ElasticIncrementInput,
     FiberSteel02Module,
     LSTM_FC_Module,
     increment_from_bounded_level,
@@ -14,7 +15,7 @@ from nets.common import (
 
 
 class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
-    """Predict all global displacement increments without an SCL module."""
+    """Predict global increments from fixed-SCL elastic increments."""
 
     def __init__(
         self,
@@ -22,10 +23,10 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         nDOF: int,
         delta_t: float,
         stiffness: torch.Tensor,
+        influence_kernel: torch.Tensor,
         fiber: dict[str, torch.Tensor],
         steel: dict[str, float],
-        load_scale: torch.Tensor,
-        increment_scale: float = 1.0e-4,
+        input_increment_scale: float | torch.Tensor = 1.0e-1,
         displacement_scale: float | torch.Tensor | None = None,
         hidden_size: int = 240,
         fc_size: int = 240,
@@ -35,9 +36,9 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         self.nDOF = nDOF
         self.delta_t = float(delta_t)
         level_scale_tensor = torch.as_tensor(
-            increment_scale if displacement_scale is None else displacement_scale,
-            dtype=load_scale.dtype,
-            device=load_scale.device,
+            input_increment_scale if displacement_scale is None else displacement_scale,
+            dtype=stiffness.dtype,
+            device=stiffness.device,
         ).reshape(-1)
         if level_scale_tensor.numel() == 1:
             level_scale_tensor = level_scale_tensor.expand(nDOF).clone()
@@ -47,25 +48,30 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
             "level_scale_vector",
             level_scale_tensor.reshape(1, 1, nDOF),
         )
-        self.register_buffer("load_scale", load_scale.reshape(1, 1, nLoad))
+        self.ElasticInput_Module = ElasticIncrementInput(
+            influence_kernel, nDOF, input_increment_scale
+        )
         self.LSTM_Module = LSTM_FC_Module(
             nLoad, nDOF, hidden_size, fc_size
         )
-        # Increments are now differences of a bounded level, so the default
-        # Linear initialization is safe and lets gradients reach all LSTM/FC
-        # layers from the first update.  Zero-initializing FC2 here collapses
-        # the long-history network to the exact zero-response baseline.
+        # Start close to the elastic skip connection while retaining nonzero
+        # gradients through all LSTM/FC layers from the first update.
+        nn.init.xavier_uniform_(self.LSTM_Module.FC2.weight, gain=1.0e-2)
+        nn.init.zeros_(self.LSTM_Module.FC2.bias)
         self.Constitutive_Module = FiberSteel02Module(
             stiffness, fiber, steel
         )
 
     def forward(self, load: torch.Tensor) -> dict[str, torch.Tensor]:
         load_sequence = load.squeeze(1).transpose(1, 2)
-        network_input = load_sequence / self.load_scale
-        level = self.LSTM_Module(network_input) * self.level_scale_vector
-        increment = increment_from_bounded_level(
-            level
+        network_input, elastic_increment, elastic_displacement = (
+            self.ElasticInput_Module(load_sequence)
         )
+        correction_level = (
+            self.LSTM_Module(network_input) * self.level_scale_vector
+        )
+        correction_increment = increment_from_bounded_level(correction_level)
+        increment = elastic_increment + correction_increment
         displacement = torch.cumsum(increment, dim=1)
         velocity, acceleration = newmark_average_acceleration_kinematics(
             increment, self.delta_t
@@ -75,6 +81,9 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         )
         return {
             "dis_increment": increment,
+            "correction_dis_increment": correction_increment,
+            "elastic_dis_increment": elastic_increment,
+            "elastic_dis": elastic_displacement,
             "dis": displacement,
             "vel": velocity,
             "acc": acceleration,
@@ -85,17 +94,25 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
     def forward_chunk(self, load, state=None, compute_physics: bool = True):
         """Evaluate one consecutive TBPTT chunk and return detached history."""
         load_sequence = load.squeeze(1).transpose(1, 2)
-        network_input = load_sequence / self.load_scale
+        elastic_state = None if state is None else state["elastic"]
+        (
+            network_input,
+            elastic_increment,
+            elastic_displacement,
+            elastic_state,
+        ) = self.ElasticInput_Module.forward_chunk(
+            load_sequence, elastic_state
+        )
         lstm_state = None if state is None else state["lstm"]
-        level, lstm_state = self.LSTM_Module(
+        correction_level, lstm_state = self.LSTM_Module(
             network_input, lstm_state, True
         )
-        level = level * self.level_scale_vector
+        correction_level = correction_level * self.level_scale_vector
         if state is None:
             previous_level = None
-            displacement0 = torch.zeros_like(level[:, :1])
-            velocity0 = torch.zeros_like(level[:, :1])
-            acceleration0 = torch.zeros_like(level[:, :1])
+            displacement0 = torch.zeros_like(correction_level[:, :1])
+            velocity0 = torch.zeros_like(correction_level[:, :1])
+            acceleration0 = torch.zeros_like(correction_level[:, :1])
             material_state = None
         else:
             previous_level = state["network_level"]
@@ -103,7 +120,10 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
             velocity0 = state["velocity"]
             acceleration0 = state["acceleration"]
             material_state = state.get("material")
-        increment = increment_from_bounded_level(level, previous_level)
+        correction_increment = increment_from_bounded_level(
+            correction_level, previous_level
+        )
+        increment = elastic_increment + correction_increment
         displacement = displacement0 + torch.cumsum(increment, dim=1)
         velocity, acceleration = newmark_average_acceleration_kinematics(
             increment, self.delta_t, velocity0, acceleration0
@@ -123,7 +143,8 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
                 for hidden, cell in lstm_state
             ),
             "displacement": displacement[:, -1:].detach(),
-            "network_level": level[:, -1:].detach(),
+            "network_level": correction_level[:, -1:].detach(),
+            "elastic": elastic_state,
             "velocity": velocity[:, -1:].detach(),
             "acceleration": acceleration[:, -1:].detach(),
             "material": (
@@ -137,6 +158,9 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         }
         return {
             "dis_increment": increment,
+            "correction_dis_increment": correction_increment,
+            "elastic_dis_increment": elastic_increment,
+            "elastic_dis": elastic_displacement,
             "dis": displacement,
             "vel": velocity,
             "acc": acceleration,

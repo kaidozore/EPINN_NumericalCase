@@ -58,13 +58,13 @@ def main() -> None:
         nDOF=checkpoint["n_dof"],
         delta_t=checkpoint["delta_t"],
         stiffness=tensors["stiffness"],
+        influence_kernel=tensors["kernel"],
         fiber=tensors["fiber"],
         steel=tensors["steel"],
-        load_scale=torch.as_tensor(
-            checkpoint["load_scale"], dtype=torch.float64
-        ),
-        increment_scale=torch.as_tensor(
-            checkpoint.get("increment_scale", config.displacement_increment_scale),
+        input_increment_scale=torch.as_tensor(
+            checkpoint.get(
+                "input_increment_scale", config.displacement_increment_scale
+            ),
             dtype=torch.float64,
         ),
         displacement_scale=torch.as_tensor(

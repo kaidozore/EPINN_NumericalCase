@@ -66,10 +66,11 @@ def main() -> None:
         stiffness=tensors["stiffness"],
         fiber=tensors["fiber"],
         steel=tensors["steel"],
-        load_scale=torch.as_tensor(
-            checkpoint["load_scale"], dtype=torch.float64
+        input_increment_scale=float(
+            checkpoint.get(
+                "input_increment_scale", config.displacement_increment_scale
+            )
         ),
-        increment_scale=config.displacement_increment_scale,
         displacement_scale=float(
             checkpoint.get("network_level_scale", config.displacement_scale)
         ),
