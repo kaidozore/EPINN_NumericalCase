@@ -30,25 +30,30 @@ def _run_epoch(
             total_steps = loads.shape[-1]
             chunk_length = total_steps if tbptt_length is None else tbptt_length
             state = None
+            if training:
+                # Keep one set of network parameters throughout the complete
+                # response history.  Gradients are accumulated over detached
+                # TBPTT chunks, then one optimizer update is applied per batch.
+                optimizer.zero_grad(set_to_none=True)
             for start in range(0, total_steps, chunk_length):
                 stop = min(start + chunk_length, total_steps)
                 load_chunk = loads[..., start:stop]
-                if training:
-                    optimizer.zero_grad(set_to_none=True)
                 prediction, state = model.forward_chunk(
                     load_chunk, state, compute_physics=True
                 )
                 loss = model_loss(load_chunk, prediction)
                 if training:
-                    loss.backward()
-                    if gradient_clip is not None:
-                        torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), gradient_clip
-                        )
-                    optimizer.step()
+                    chunk_fraction = (stop - start) / total_steps
+                    (loss * chunk_fraction).backward()
                 weight = loads.shape[0] * (stop - start)
                 total += float(loss.detach()) * weight
                 count += weight
+            if training:
+                if gradient_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), gradient_clip
+                    )
+                optimizer.step()
     if count == 0:
         raise ValueError("The data loader did not produce any batches.")
     return total / count

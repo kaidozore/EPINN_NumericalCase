@@ -200,12 +200,15 @@ def main() -> None:
         fiber=tensors["fiber"],
         steel=tensors["steel"],
         input_increment_scale=config.displacement_increment_scale,
-        output_increment_scale=config.displacement_increment_scale,
         hidden_size=8,
         fc_size=8,
     )
     pinn = PINN_PhyLSTM3_DisIncrement_NetBody(
-        nDOF=n_dof, delta_t=data.delta_t, **common
+        nDOF=n_dof,
+        delta_t=data.delta_t,
+        input_displacement_scale=config.displacement_scale,
+        output_displacement_scale=config.displacement_scale,
+        **common,
     ).double()
     pinn_prediction = pinn(load)
     pinn_loss = PINN_MDOFSys_DisIncrement_PhyLoss(
@@ -218,6 +221,7 @@ def main() -> None:
 
     epinn = EPINN_PhyLSTM_NetBody(
         nLoadNL=n_dof,
+        output_increment_scale=config.displacement_increment_scale,
         **common,
     ).double()
     epinn_prediction = epinn(load)

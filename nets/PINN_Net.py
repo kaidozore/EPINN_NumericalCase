@@ -15,7 +15,7 @@ from nets.common import (
 
 
 class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
-    """Predict global increments from fixed-SCL elastic increments."""
+    """Predict the nonlinear total displacement from the elastic history."""
 
     def __init__(
         self,
@@ -27,7 +27,8 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         fiber: dict[str, torch.Tensor],
         steel: dict[str, float],
         input_increment_scale: float | torch.Tensor = 1.0e-1,
-        output_increment_scale: float | torch.Tensor | None = None,
+        input_displacement_scale: float | torch.Tensor = 5.0e-1,
+        output_displacement_scale: float | torch.Tensor = 5.0e-1,
         hidden_size: int = 240,
         fc_size: int = 240,
     ) -> None:
@@ -35,22 +36,25 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         self.nLoad = nLoad
         self.nDOF = nDOF
         self.delta_t = float(delta_t)
-        output_scale_tensor = torch.as_tensor(
-            input_increment_scale
-            if output_increment_scale is None
-            else output_increment_scale,
-            dtype=stiffness.dtype,
-            device=stiffness.device,
-        ).reshape(-1)
-        if output_scale_tensor.numel() == 1:
-            output_scale_tensor = output_scale_tensor.expand(nDOF).clone()
-        if output_scale_tensor.numel() != nDOF:
-            raise ValueError(
-                "output_increment_scale must be scalar or have nDOF entries."
-            )
+        def displacement_scale(value, name):
+            scale = torch.as_tensor(
+                value, dtype=stiffness.dtype, device=stiffness.device
+            ).reshape(-1)
+            if scale.numel() == 1:
+                scale = scale.expand(nDOF).clone()
+            if scale.numel() != nDOF or torch.any(scale <= 0.0):
+                raise ValueError(f"{name} must contain positive DOF scales.")
+            return scale.reshape(1, 1, nDOF)
+
         self.register_buffer(
-            "output_increment_scale",
-            output_scale_tensor.reshape(1, 1, nDOF),
+            "input_displacement_scale",
+            displacement_scale(input_displacement_scale, "input_displacement_scale"),
+        )
+        self.register_buffer(
+            "output_displacement_scale",
+            displacement_scale(
+                output_displacement_scale, "output_displacement_scale"
+            ),
         )
         self.ElasticInput_Module = ElasticIncrementInput(
             influence_kernel, nDOF, input_increment_scale
@@ -58,19 +62,29 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         self.LSTM_Module = LSTM_FC_Module(
             nLoad, nDOF, hidden_size, fc_size
         )
+        # A default linear head produces high-frequency random displacement;
+        # numerical differentiation then amplifies it into enormous initial
+        # acceleration.  Start near zero response without blocking gradients.
+        nn.init.xavier_uniform_(self.LSTM_Module.FC2.weight, gain=1.0e-2)
+        nn.init.zeros_(self.LSTM_Module.FC2.bias)
         self.Constitutive_Module = FiberSteel02Module(
             stiffness, fiber, steel
         )
 
     def forward(self, load: torch.Tensor) -> dict[str, torch.Tensor]:
         load_sequence = load.squeeze(1).transpose(1, 2)
-        network_input, elastic_increment, elastic_displacement = (
+        _, elastic_increment, elastic_displacement = (
             self.ElasticInput_Module(load_sequence)
         )
-        increment = force_initial_zero(
-            self.LSTM_Module(network_input) * self.output_increment_scale
+        network_input = elastic_displacement / self.input_displacement_scale
+        displacement = force_initial_zero(
+            self.LSTM_Module(network_input) * self.output_displacement_scale
         )
-        displacement = torch.cumsum(increment, dim=1)
+        increment = torch.diff(
+            displacement,
+            dim=1,
+            prepend=torch.zeros_like(displacement[:, :1]),
+        )
         velocity, acceleration = newmark_average_acceleration_kinematics(
             increment, self.delta_t
         )
@@ -93,30 +107,37 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         load_sequence = load.squeeze(1).transpose(1, 2)
         elastic_state = None if state is None else state["elastic"]
         (
-            network_input,
+            _,
             elastic_increment,
             elastic_displacement,
             elastic_state,
         ) = self.ElasticInput_Module.forward_chunk(
             load_sequence, elastic_state
         )
+        network_input = elastic_displacement / self.input_displacement_scale
         lstm_state = None if state is None else state["lstm"]
-        increment, lstm_state = self.LSTM_Module(
+        displacement, lstm_state = self.LSTM_Module(
             network_input, lstm_state, True
         )
-        increment = increment * self.output_increment_scale
+        displacement = displacement * self.output_displacement_scale
         if state is None:
-            increment = force_initial_zero(increment)
-            displacement0 = torch.zeros_like(increment[:, :1])
-            velocity0 = torch.zeros_like(increment[:, :1])
-            acceleration0 = torch.zeros_like(increment[:, :1])
+            displacement = force_initial_zero(displacement)
+            previous_displacement = torch.zeros_like(displacement[:, :1])
+            velocity0 = torch.zeros_like(displacement[:, :1])
+            acceleration0 = torch.zeros_like(displacement[:, :1])
             material_state = None
         else:
-            displacement0 = state["displacement"]
+            previous_displacement = state["displacement"]
             velocity0 = state["velocity"]
             acceleration0 = state["acceleration"]
             material_state = state.get("material")
-        displacement = displacement0 + torch.cumsum(increment, dim=1)
+        increment = torch.cat(
+            (
+                displacement[:, :1] - previous_displacement,
+                displacement[:, 1:] - displacement[:, :-1],
+            ),
+            dim=1,
+        )
         velocity, acceleration = newmark_average_acceleration_kinematics(
             increment, self.delta_t, velocity0, acceleration0
         )

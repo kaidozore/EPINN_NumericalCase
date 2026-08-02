@@ -67,10 +67,14 @@ def main() -> None:
             ),
             dtype=torch.float64,
         ),
-        output_increment_scale=torch.as_tensor(
+        input_displacement_scale=torch.as_tensor(
             checkpoint.get(
-                "output_increment_scale", config.displacement_increment_scale
+                "input_displacement_scale", config.displacement_scale
             ),
+            dtype=torch.float64,
+        ),
+        output_displacement_scale=torch.as_tensor(
+            checkpoint.get("output_displacement_scale", config.displacement_scale),
             dtype=torch.float64,
         ),
         hidden_size=checkpoint["hidden_size"],

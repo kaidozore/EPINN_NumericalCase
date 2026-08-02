@@ -85,7 +85,8 @@ def main() -> None:
         fiber=tensors["fiber"],
         steel=tensors["steel"],
         input_increment_scale=config.displacement_increment_scale,
-        output_increment_scale=config.displacement_increment_scale,
+        input_displacement_scale=config.displacement_scale,
+        output_displacement_scale=config.displacement_scale,
         hidden_size=args.hidden_size,
         fc_size=args.fc_size,
     ).double().to(device)
@@ -107,12 +108,13 @@ def main() -> None:
     checkpoint_data = {
         "method": "PINN",
         "case_config": config.to_dict(),
-        "network_input": "elastic_displacement_increment_from_fixed_SCL",
-        "network_output": "nonlinear_total_displacement_increment",
+        "network_input": "elastic_displacement_history_from_fixed_SCL",
+        "network_output": "nonlinear_total_displacement_history",
         "loss": "mean(((M*a+C*v+Fint-Fwave)/1e5)^2)",
         "force_scale_n": 1.0e5,
         "input_increment_scale": float(config.displacement_increment_scale),
-        "output_increment_scale": float(config.displacement_increment_scale),
+        "input_displacement_scale": float(config.displacement_scale),
+        "output_displacement_scale": float(config.displacement_scale),
         "hidden_size": args.hidden_size,
         "fc_size": args.fc_size,
         "n_load": int(data.load.shape[2]),
@@ -126,8 +128,9 @@ def main() -> None:
         f"{len(split.train)}/{len(split.validation)}/{len(split.test)}"
     )
     print(
-        "PINN: elastic displacement increments -> LSTM -> nonlinear total "
-        "increments; loss = MSE((M*a + C*v + Fint - Fwave) / 1e5 N)."
+        "PINN: elastic displacement history -> LSTM -> nonlinear total "
+        "displacement history; loss = "
+        "MSE((M*a + C*v + Fint - Fwave) / 1e5 N)."
     )
     start_time = time.time()
     for epoch in range(args.epochs):
