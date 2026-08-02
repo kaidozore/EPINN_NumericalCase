@@ -110,6 +110,7 @@ def main() -> None:
         "case_config": config.to_dict(),
         "network_input": "elastic_displacement_history_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_history",
+        "kinematics": "second_order_central_difference",
         "loss": "mean(((M*a+C*v+Fint-Fwave)/1e5)^2)",
         "force_scale_n": 1.0e5,
         "input_increment_scale": float(config.displacement_increment_scale),

@@ -9,8 +9,8 @@ from nets.common import (
     ElasticIncrementInput,
     FiberSteel02Module,
     LSTM_FC_Module,
+    central_difference_kinematics,
     force_initial_zero,
-    newmark_average_acceleration_kinematics,
 )
 
 
@@ -85,8 +85,8 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
             dim=1,
             prepend=torch.zeros_like(displacement[:, :1]),
         )
-        velocity, acceleration = newmark_average_acceleration_kinematics(
-            increment, self.delta_t
+        velocity, acceleration = central_difference_kinematics(
+            displacement, self.delta_t
         )
         force_internal, force_nonlinear = self.Constitutive_Module(
             displacement
@@ -123,13 +123,9 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         if state is None:
             displacement = force_initial_zero(displacement)
             previous_displacement = torch.zeros_like(displacement[:, :1])
-            velocity0 = torch.zeros_like(displacement[:, :1])
-            acceleration0 = torch.zeros_like(displacement[:, :1])
             material_state = None
         else:
             previous_displacement = state["displacement"]
-            velocity0 = state["velocity"]
-            acceleration0 = state["acceleration"]
             material_state = state.get("material")
         increment = torch.cat(
             (
@@ -138,8 +134,10 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
             ),
             dim=1,
         )
-        velocity, acceleration = newmark_average_acceleration_kinematics(
-            increment, self.delta_t, velocity0, acceleration0
+        velocity, acceleration = central_difference_kinematics(
+            displacement,
+            self.delta_t,
+            None if state is None else previous_displacement,
         )
         if compute_physics:
             force_internal, force_nonlinear, material_state = (
@@ -157,8 +155,6 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
             ),
             "displacement": displacement[:, -1:].detach(),
             "elastic": elastic_state,
-            "velocity": velocity[:, -1:].detach(),
-            "acceleration": acceleration[:, -1:].detach(),
             "material": (
                 None
                 if material_state is None

@@ -568,6 +568,94 @@ def central_difference(
     )
 
 
+def central_difference_kinematics(
+    displacement: torch.Tensor,
+    delta_t: float,
+    previous_displacement: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Recover velocity and acceleration by second-order finite differences.
+
+    Interior points use central differences.  At the right boundary, where a
+    future displacement is unavailable during TBPTT, second-order backward
+    formulas are used.  A previous chunk's final displacement supplies the
+    left neighbour of the next chunk's first point.  The known global initial
+    velocity and acceleration are imposed exactly as zero.
+    """
+
+    if displacement.ndim != 3 or displacement.shape[1] < 4:
+        raise ValueError("At least four displacement points are required.")
+    if delta_t <= 0.0:
+        raise ValueError("delta_t must be positive.")
+    dt = float(delta_t)
+    dt2 = dt * dt
+    if previous_displacement is not None:
+        if previous_displacement.shape != displacement[:, :1].shape:
+            raise ValueError(
+                "previous_displacement must have shape [batch,1,dof]."
+            )
+        values = torch.cat((previous_displacement, displacement), dim=1)
+        velocity = torch.cat(
+            (
+                (values[:, 2:] - values[:, :-2]) / (2.0 * dt),
+                (
+                    3.0 * values[:, -1:]
+                    - 4.0 * values[:, -2:-1]
+                    + values[:, -3:-2]
+                ) / (2.0 * dt),
+            ),
+            dim=1,
+        )
+        acceleration = torch.cat(
+            (
+                (
+                    values[:, 2:]
+                    - 2.0 * values[:, 1:-1]
+                    + values[:, :-2]
+                ) / dt2,
+                (
+                    2.0 * values[:, -1:]
+                    - 5.0 * values[:, -2:-1]
+                    + 4.0 * values[:, -3:-2]
+                    - values[:, -4:-3]
+                ) / dt2,
+            ),
+            dim=1,
+        )
+        return velocity, acceleration
+
+    zero = torch.zeros_like(displacement[:, :1])
+    velocity = torch.cat(
+        (
+            zero,
+            (displacement[:, 2:] - displacement[:, :-2]) / (2.0 * dt),
+            (
+                3.0 * displacement[:, -1:]
+                - 4.0 * displacement[:, -2:-1]
+                + displacement[:, -3:-2]
+            ) / (2.0 * dt),
+        ),
+        dim=1,
+    )
+    acceleration = torch.cat(
+        (
+            zero,
+            (
+                displacement[:, 2:]
+                - 2.0 * displacement[:, 1:-1]
+                + displacement[:, :-2]
+            ) / dt2,
+            (
+                2.0 * displacement[:, -1:]
+                - 5.0 * displacement[:, -2:-1]
+                + 4.0 * displacement[:, -3:-2]
+                - displacement[:, -4:-3]
+            ) / dt2,
+        ),
+        dim=1,
+    )
+    return velocity, acceleration
+
+
 def newmark_average_acceleration_kinematics(
     displacement_increment: torch.Tensor,
     delta_t: float,

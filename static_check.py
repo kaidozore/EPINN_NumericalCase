@@ -240,7 +240,7 @@ def main() -> None:
         for name, model, keys in (
             (
                 "PINN", pinn,
-                ("elastic_dis_increment", "dis", "vel", "acc", "force_nonlinear"),
+                ("elastic_dis_increment", "dis", "force_nonlinear"),
             ),
             (
                 "E-PINN", epinn,
