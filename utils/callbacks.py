@@ -73,10 +73,14 @@ def save_top_k_checkpoint(
     for _, _, _, candidate in ranked[max_to_keep:]:
         candidate.unlink()
         removed.append(candidate.name)
-    if removed:
+    # A worse current checkpoint is normally the file that was just removed.
+    # Stay silent in that case: no retained model has actually been replaced.
+    # Report only when the current checkpoint enters the top-k set and evicts
+    # an older retained checkpoint.
+    if removed and output.exists():
         print(
-            f"Checkpoint retention: removed {len(removed)} file(s); "
-            f"kept the {max_to_keep} smallest val_loss values."
+            "Checkpoint retention: current checkpoint entered the "
+            f"top {max_to_keep}; removed {len(removed)} older file(s)."
         )
     return output
 
