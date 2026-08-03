@@ -116,7 +116,10 @@ def main() -> None:
         "network_input": "elastic_displacement_history_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_history",
         "kinematics": "second_order_central_difference",
-        "loss": "mean((inv(K0)*(M*a+C*v+K0*u+R-Fwave))^2)",
+        "loss": (
+            "RMSE(u-u_equilibrium)*(1.1-corr); "
+            "u_equilibrium=-inv(K0)*(M*a+C*v+R-Fwave)"
+        ),
         "label_loss": "mean((u_prediction-u_MATLAB)^2)",
         "label_weight": args.label_weight,
         "labelled_indices": split.labelled.tolist(),
@@ -140,6 +143,7 @@ def main() -> None:
         "PINN: elastic displacement history -> LSTM -> nonlinear total "
         "displacement history; loss = "
         "physics_MSE + label_weight*MSE(u - u_MATLAB)."
+        " Physics RMSE uses a displacement-history correlation multiplier."
     )
     start_time = time.time()
     for epoch in range(args.epochs):

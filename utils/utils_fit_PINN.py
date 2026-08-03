@@ -18,12 +18,14 @@ def _run_epoch(
     optimizer: torch.optim.Optimizer | None,
     tbptt_length: int | None,
     gradient_clip: float | None,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float, float]:
     training = optimizer is not None
     model.train(training)
     total = 0.0
     physics_total = 0.0
     label_total = 0.0
+    equilibrium_rmse_total = 0.0
+    correlation_total = 0.0
     count = 0
     label_count = 0
     context = torch.enable_grad() if training else torch.no_grad()
@@ -58,6 +60,10 @@ def _run_epoch(
                 weight = loads.shape[0] * (stop - start)
                 total += float(loss.detach()) * weight
                 physics_total += float(parts["physics"]) * weight
+                equilibrium_rmse_total += (
+                    float(parts["equilibrium_rmse"]) * weight
+                )
+                correlation_total += float(parts["correlation"]) * weight
                 count += weight
                 current_labelled = int(parts["labelled_count"])
                 if current_labelled:
@@ -76,6 +82,8 @@ def _run_epoch(
         total / count,
         physics_total / count,
         0.0 if label_count == 0 else label_total / label_count,
+        equilibrium_rmse_total / count,
+        correlation_total / count,
     )
 
 
@@ -95,11 +103,17 @@ def fitOneEpoch_PINN_DisIncrement_PhyLoss(
     gradient_clip: float | None = 1.0,
     save_period: int = 1,
 ) -> tuple[float, float]:
-    train_loss, train_physics, train_label = _run_epoch(
+    (
+        train_loss, train_physics, train_label,
+        train_equilibrium_rmse, train_correlation,
+    ) = _run_epoch(
         model, modelLoss, genTrain, device, optimizer,
         tbptt_length, gradient_clip,
     )
-    val_loss, val_physics, _ = _run_epoch(
+    (
+        val_loss, val_physics, _,
+        val_equilibrium_rmse, val_correlation,
+    ) = _run_epoch(
         model, modelLoss, genVal, device, None, tbptt_length, None,
     )
     lossHistory.append_loss(
@@ -110,12 +124,18 @@ def fitOneEpoch_PINN_DisIncrement_PhyLoss(
             "train_physics": train_physics,
             "train_label": train_label,
             "val_physics": val_physics,
+            "train_equilibrium_rmse": train_equilibrium_rmse,
+            "val_equilibrium_rmse": val_equilibrium_rmse,
+            "train_correlation": train_correlation,
+            "val_correlation": val_correlation,
         },
     )
     print(
         f"Epoch {epoch + 1}/{endEpoch} - "
         f"loss: {train_loss:.6e} - val_loss: {val_loss:.6e} - "
         f"physics: {train_physics:.3e} - label: {train_label:.3e} - "
+        f"eq_rmse: {train_equilibrium_rmse:.3e} - "
+        f"corr: {train_correlation:.4f}/{val_correlation:.4f} - "
         f"lr: {get_lr(optimizer):.3e}"
     )
     if (epoch + 1) % save_period == 0 or epoch + 1 == endEpoch:
@@ -131,6 +151,10 @@ def fitOneEpoch_PINN_DisIncrement_PhyLoss(
                 "train_physics": train_physics,
                 "train_label": train_label,
                 "val_physics": val_physics,
+                "train_equilibrium_rmse": train_equilibrium_rmse,
+                "val_equilibrium_rmse": val_equilibrium_rmse,
+                "train_correlation": train_correlation,
+                "val_correlation": val_correlation,
             },
             epoch=epoch + 1,
             train_loss=train_loss,
