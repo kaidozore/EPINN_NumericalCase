@@ -117,7 +117,7 @@ def main() -> None:
         "network_output": "nonlinear_total_displacement_history",
         "kinematics": "second_order_central_difference",
         "loss": (
-            "RMSE(u-u_equilibrium)*(1.1-corr); "
+            "RMSE(u-u_equilibrium); correlation is monitoring-only; "
             "u_equilibrium=-inv(K0)*(M*a+C*v+R-Fwave)"
         ),
         "label_loss": "mean((u_prediction-u_MATLAB)^2)",
@@ -143,7 +143,7 @@ def main() -> None:
         "PINN: elastic displacement history -> LSTM -> nonlinear total "
         "displacement history; loss = "
         "physics_MSE + label_weight*MSE(u - u_MATLAB)."
-        " Physics RMSE uses a displacement-history correlation multiplier."
+        " Displacement-history correlation is logged but not optimized."
     )
     start_time = time.time()
     for epoch in range(args.epochs):

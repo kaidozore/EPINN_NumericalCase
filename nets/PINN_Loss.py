@@ -7,7 +7,7 @@ import torch.nn as nn
 
 
 class PINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
-    """Correlation-weighted physics RMSE plus labelled displacement MSE."""
+    """Physics RMSE plus labelled displacement MSE and correlation metrics."""
 
     def __init__(
         self,
@@ -56,8 +56,8 @@ class PINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         )
 
         # Pearson correlation is evaluated independently for every sample and
-        # DOF along the time axis.  The 1.1 offset retains 0.1*RMSE even when
-        # two histories have correlation one but different amplitudes.
+        # DOF along the time axis.  It is logged as a diagnostic metric only
+        # and deliberately does not alter the optimization objective.
         prediction_centered = prediction["dis"] - torch.mean(
             prediction["dis"], dim=1, keepdim=True
         )
@@ -79,7 +79,7 @@ class PINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
             mean_correlation = torch.mean(correlation_values[valid])
         else:
             mean_correlation = equilibrium_rmse.new_zeros(())
-        physics_loss = equilibrium_rmse * (1.1 - mean_correlation)
+        physics_loss = equilibrium_rmse
         if target is None:
             return physics_loss
 
