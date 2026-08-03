@@ -111,7 +111,7 @@ def main() -> None:
         "network_input": "elastic_displacement_history_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_history",
         "kinematics": "second_order_central_difference",
-        "loss": "mean((a+inv(M)*(C*v+K*u+R-Fwave))^2)",
+        "loss": "mean((inv(K0)*(M*a+C*v+K0*u+R-Fwave))^2)",
         "input_increment_scale": float(config.displacement_increment_scale),
         "input_displacement_scale": float(config.displacement_scale),
         "output_displacement_scale": float(config.displacement_scale),
@@ -130,7 +130,7 @@ def main() -> None:
     print(
         "PINN: elastic displacement history -> LSTM -> nonlinear total "
         "displacement history; loss = "
-        "MSE(a + inv(M)*(C*v + K*u + R - Fwave))."
+        "MSE(inv(K0)*(M*a + C*v + K0*u + R - Fwave))."
     )
     start_time = time.time()
     for epoch in range(args.epochs):
