@@ -40,6 +40,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument(
+        "--label-weight", type=float, default=0.1,
+        help="Weight of displacement MSE on 40 labelled training samples.",
+    )
+    parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
     return parser.parse_args()
@@ -61,7 +65,7 @@ def main() -> None:
     data = load_case_data(config)
     split = build_data_split(config, data.load.shape[0])
     tensors = as_torch_case(data, device)
-    train_dataset = DynAnaDataset(data, split.train)
+    train_dataset = DynAnaDataset(data, split.train, split.labelled)
     val_dataset = DynAnaDataset(data, split.validation)
     loader_options = {
         "batch_size": config.batch_size,
@@ -91,7 +95,8 @@ def main() -> None:
         fc_size=args.fc_size,
     ).double().to(device)
     modelLoss = PINN_MDOFSys_DisIncrement_PhyLoss(
-        tensors["mass"], tensors["damping"], tensors["stiffness"]
+        tensors["mass"], tensors["damping"], tensors["stiffness"],
+        label_weight=args.label_weight,
     ).double().to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
     lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -112,6 +117,9 @@ def main() -> None:
         "network_output": "nonlinear_total_displacement_history",
         "kinematics": "second_order_central_difference",
         "loss": "mean((inv(K0)*(M*a+C*v+K0*u+R-Fwave))^2)",
+        "label_loss": "mean((u_prediction-u_MATLAB)^2)",
+        "label_weight": args.label_weight,
+        "labelled_indices": split.labelled.tolist(),
         "input_increment_scale": float(config.displacement_increment_scale),
         "input_displacement_scale": float(config.displacement_scale),
         "output_displacement_scale": float(config.displacement_scale),
@@ -125,12 +133,13 @@ def main() -> None:
 
     print(
         f"Device: {device}; train/validation/test = "
-        f"{len(split.train)}/{len(split.validation)}/{len(split.test)}"
+        f"{len(split.train)}/{len(split.validation)}/{len(split.test)}; "
+        f"labelled training samples = {len(split.labelled)}"
     )
     print(
         "PINN: elastic displacement history -> LSTM -> nonlinear total "
         "displacement history; loss = "
-        "MSE(inv(K0)*(M*a + C*v + K0*u + R - Fwave))."
+        "physics_MSE + label_weight*MSE(u - u_MATLAB)."
     )
     start_time = time.time()
     for epoch in range(args.epochs):
