@@ -52,6 +52,14 @@ ETDM/SCL 重构、两种模型的前向/反向和 TBPTT 状态连续性，不执
 
 ## 训练
 
+工程提供三种彼此独立的训练/预测方式：
+
+- `PINN_MDOFSys_Train.py` / `PINN_MDOFSys_Predict.py`：全量位移PINN；
+- `EPINN_MDOFSys_Train.py` / `EPINN_MDOFSys_Predict.py`：位移增量E-PINN；
+- `EPINN_MDOFSys_Full_Train.py` / `EPINN_MDOFSys_Full_Predict.py`：新增的
+  全量位移E-PINN。其输入为弹性全量位移，LSTM输出弹塑性全量位移，唯一
+  loss为`mean((u_LSTM-u_SCL)^2)`，单位为`m^2`。
+
 先用短序列检查运行环境：
 
 ```bash
@@ -71,6 +79,9 @@ python PINN_MDOFSys_Train.py --data-root .. --epochs 1000 \
 
 python EPINN_MDOFSys_Train.py --data-root .. --epochs 1000 \
   --batch-size 10 --tbptt-length 500
+
+python EPINN_MDOFSys_Full_Train.py --data-root .. --epochs 1000 \
+  --batch-size 10 --tbptt-length 500
 ```
 
 PINN 和 E-PINN 均默认采用全局梯度范数裁剪 `1.0`。E-PINN 会在 CSV 中记录
@@ -87,4 +98,5 @@ PINN 和 E-PINN 均默认采用全局梯度范数裁剪 `1.0`。E-PINN 会在 CS
 ```bash
 python PINN_MDOFSys_Predict.py checkpoint.pth --data-root ..
 python EPINN_MDOFSys_Predict.py checkpoint.pth --data-root ..
+python EPINN_MDOFSys_Full_Predict.py checkpoint.pth --data-root ..
 ```

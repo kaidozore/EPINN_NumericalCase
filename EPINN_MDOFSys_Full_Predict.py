@@ -1,0 +1,88 @@
+"""Predict held-out samples with the full-displacement E-PINN."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import torch
+
+from config import CaseConfig
+from nets.EPINN_Full_Net import EPINN_FullDis_PhyLSTM_NetBody
+from utils.DataPreProcess import as_torch_case, build_data_split, load_case_data
+from utils.predict_utils import (
+    acceleration_from_equilibrium,
+    batched_predict,
+    print_displacement_metrics,
+    save_matlab_output,
+)
+
+
+def parse_args() -> argparse.Namespace:
+    default_root = Path(__file__).resolve().parents[1]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("checkpoint", type=Path)
+    parser.add_argument("--data-root", type=Path, default=default_root)
+    parser.add_argument(
+        "--output", type=Path,
+        default=Path(
+            "DataSet/EPINN_Full/Outputs/MDOFSys_Wave_EPINN_Full.mat"
+        ),
+    )
+    parser.add_argument("--batch-size", type=int, default=10)
+    parser.add_argument(
+        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    device = torch.device(args.device)
+    checkpoint = torch.load(
+        args.checkpoint, map_location=device, weights_only=False
+    )
+    stored_config = checkpoint["case_config"]
+    config = CaseConfig(
+        data_root=args.data_root,
+        time_truncation=int(stored_config["time_truncation"]),
+        sequence_length=stored_config.get("sequence_length"),
+        displacement_increment_scale=float(
+            stored_config["displacement_increment_scale"]
+        ),
+        displacement_scale=float(stored_config["displacement_scale"]),
+    )
+    data = load_case_data(config)
+    split = build_data_split(config, data.load.shape[0])
+    tensors = as_torch_case(data, device)
+    model = EPINN_FullDis_PhyLSTM_NetBody(
+        nLoad=checkpoint["n_load"],
+        nLoadNL=checkpoint["n_dof"],
+        influence_kernel=tensors["kernel"],
+        stiffness=tensors["stiffness"],
+        fiber=tensors["fiber"],
+        steel=tensors["steel"],
+        input_increment_scale=float(checkpoint["input_increment_scale"]),
+        input_displacement_scale=float(checkpoint["input_displacement_scale"]),
+        output_displacement_scale=float(
+            checkpoint["output_displacement_scale"]
+        ),
+        hidden_size=checkpoint["hidden_size"],
+        fc_size=checkpoint["fc_size"],
+    ).double().to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    prediction = batched_predict(
+        model, data.load, split.test, args.batch_size, device
+    )
+    prediction["acc"] = acceleration_from_equilibrium(
+        data.load[split.test], prediction["dis"], prediction["vel"],
+        prediction["force_internal"], data.mass, data.damping,
+    )
+    print_displacement_metrics(data.displacement[split.test], prediction["dis"])
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    save_matlab_output(args.output, prediction, data.time, split.test)
+    print(f"Saved full E-PINN predictions to {args.output.resolve()}")
+
+
+if __name__ == "__main__":
+    main()
