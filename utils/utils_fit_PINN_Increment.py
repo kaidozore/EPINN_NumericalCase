@@ -18,10 +18,11 @@ def _run_epoch(
     optimizer: torch.optim.Optimizer | None,
     tbptt_length: int | None,
     gradient_clip: float | None,
-) -> float:
+) -> tuple[float, float]:
     training = optimizer is not None
     model.train(training)
     total = 0.0
+    full_displacement_correlation_total = 0.0
     count = 0
     context = torch.enable_grad() if training else torch.no_grad()
     with context:
@@ -42,17 +43,21 @@ def _run_epoch(
                 prediction, state = model.forward_chunk(
                     load_chunk, state, compute_physics=True
                 )
-                loss, loss_state = model_loss(
+                loss, loss_state, metrics = model_loss(
                     load_chunk,
                     prediction,
                     previous_equilibrium_displacement=loss_state,
                     return_state=True,
+                    return_metrics=True,
                 )
                 if training:
                     chunk_fraction = (stop - start) / total_steps
                     (loss * chunk_fraction).backward()
                 weight = loads.shape[0] * (stop - start)
                 total += float(loss.detach()) * weight
+                full_displacement_correlation_total += (
+                    float(metrics["full_displacement_correlation"]) * weight
+                )
                 count += weight
             if training:
                 if gradient_clip is not None:
@@ -62,7 +67,7 @@ def _run_epoch(
                 optimizer.step()
     if count == 0:
         raise ValueError("The data loader did not produce any batches.")
-    return total / count
+    return total / count, full_displacement_correlation_total / count
 
 
 def fitOneEpoch_PINN_Increment_PhyLoss(
@@ -81,17 +86,32 @@ def fitOneEpoch_PINN_Increment_PhyLoss(
     gradient_clip: float | None = 1.0,
     save_period: int = 1,
 ) -> tuple[float, float]:
-    train_loss = _run_epoch(
+    train_loss, train_full_displacement_correlation = _run_epoch(
         model, modelLoss, genTrain, device, optimizer,
         tbptt_length, gradient_clip,
     )
-    val_loss = _run_epoch(
+    val_loss, val_full_displacement_correlation = _run_epoch(
         model, modelLoss, genVal, device, None, tbptt_length, None,
     )
-    lossHistory.append_loss(epoch + 1, train_loss, val_loss)
+    lossHistory.append_loss(
+        epoch + 1,
+        train_loss,
+        val_loss,
+        {
+            "train_full_displacement_correlation": (
+                train_full_displacement_correlation
+            ),
+            "val_full_displacement_correlation": (
+                val_full_displacement_correlation
+            ),
+        },
+    )
     print(
         f"Epoch {epoch + 1}/{endEpoch} - "
         f"loss: {train_loss:.6e} - val_loss: {val_loss:.6e} - "
+        "full_dis_corr: "
+        f"{train_full_displacement_correlation:.4f}/"
+        f"{val_full_displacement_correlation:.4f} - "
         f"lr: {get_lr(optimizer):.3e}"
     )
     if (epoch + 1) % save_period == 0 or epoch + 1 == endEpoch:
@@ -104,6 +124,12 @@ def fitOneEpoch_PINN_Increment_PhyLoss(
                 "optimizer_state_dict": optimizer.state_dict(),
                 "train_loss": train_loss,
                 "val_loss": val_loss,
+                "train_full_displacement_correlation": (
+                    train_full_displacement_correlation
+                ),
+                "val_full_displacement_correlation": (
+                    val_full_displacement_correlation
+                ),
             },
             epoch=epoch + 1,
             train_loss=train_loss,

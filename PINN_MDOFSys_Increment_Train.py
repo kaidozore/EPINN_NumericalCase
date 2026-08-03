@@ -113,6 +113,10 @@ def main() -> None:
         "network_output": "elastoplastic_displacement_increment",
         "kinematics": "second_order_central_difference",
         "loss": "mean((du+diff(inv(K0)*(M*a+C*v+Rnl-Fwave)))^2)",
+        "monitor": (
+            "mean time-history correlation between accumulated predicted "
+            "displacement and -inv(K0)*(M*a+C*v+Rnl-Fwave)"
+        ),
         "input_increment_scale": float(config.displacement_increment_scale),
         "output_increment_scale": float(config.displacement_increment_scale),
         "hidden_size": args.hidden_size,
@@ -130,7 +134,8 @@ def main() -> None:
     print(
         "Increment PINN: elastic displacement increments -> LSTM -> "
         "elastoplastic displacement increments; loss = "
-        "MSE(du + diff(inv(K0)*(M*a + C*v + Rnl - Fwave)))."
+        "MSE(du + diff(inv(K0)*(M*a + C*v + Rnl - Fwave))). "
+        "Full-displacement correlation is monitoring-only."
     )
     start_time = time.time()
     for epoch in range(args.epochs):

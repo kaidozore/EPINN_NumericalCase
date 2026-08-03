@@ -67,7 +67,17 @@ def main() -> None:
     loss_module = PINN_MDOFSys_Increment_PhyLoss(
         tensors["mass"], tensors["damping"], tensors["stiffness"]
     ).double()
-    loss = loss_module(load, prediction)
+    loss, metrics = loss_module(load, prediction, return_metrics=True)
+    full_displacement_correlation = metrics[
+        "full_displacement_correlation"
+    ]
+    if (
+        not torch.isfinite(full_displacement_correlation)
+        or torch.abs(full_displacement_correlation) > 1.0 + 1.0e-12
+    ):
+        raise AssertionError(
+            "Increment PINN full-displacement correlation is invalid."
+        )
 
     load_sequence = load.squeeze(1).transpose(1, 2)
     force_without_elastic = (
@@ -89,7 +99,9 @@ def main() -> None:
         raise AssertionError("Increment PINN forward/loss/backward failed.")
     print(
         f"[PASS] Increment PINN equation/forward/backward, "
-        f"loss={loss.item():.6e}."
+        f"loss={loss.item():.6e}, "
+        f"full-displacement correlation="
+        f"{full_displacement_correlation.item():.6f}."
     )
 
     # The equilibrium-derived displacement must be differenced continuously
