@@ -34,7 +34,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-size", type=int, default=120)
     parser.add_argument("--fc-size", type=int, default=120)
     parser.add_argument("--time-truncation", type=int, default=600)
-    parser.add_argument("--learning-rate", type=float, default=1.0e-2)
+    parser.add_argument("--learning-rate", type=float, default=1.0e-3)
+    parser.add_argument("--lr-patience", type=int, default=15)
+    parser.add_argument("--lr-factor", type=float, default=0.5)
+    parser.add_argument("--min-learning-rate", type=float, default=1.0e-6)
+    parser.add_argument("--lr-threshold", type=float, default=1.0e-3)
+    parser.add_argument("--lr-cooldown", type=int, default=2)
     parser.add_argument(
         "--trend-window-size", type=int, default=26,
         help="Steps per local full-displacement trend window.",
@@ -114,8 +119,15 @@ def main() -> None:
     optimizer = optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=5.0e-4
     )
-    lr_scheduler = optim.lr_scheduler.StepLR(
-        optimizer, step_size=2, gamma=0.98
+    lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=args.lr_factor,
+        patience=args.lr_patience,
+        threshold=args.lr_threshold,
+        threshold_mode="rel",
+        cooldown=args.lr_cooldown,
+        min_lr=args.min_learning_rate,
     )
 
     log_root = Path(__file__).resolve().parent / "logs" / "EPINN_PhyLSTM"
@@ -169,9 +181,15 @@ def main() -> None:
                 "eps": 1.0e-8,
             },
             "scheduler": {
-                "name": "StepLR",
-                "step_size": 2,
-                "gamma": 0.98,
+                "name": "ReduceLROnPlateau",
+                "monitor": "val_loss",
+                "mode": "min",
+                "factor": args.lr_factor,
+                "patience": args.lr_patience,
+                "threshold": args.lr_threshold,
+                "threshold_mode": "rel",
+                "cooldown": args.lr_cooldown,
+                "min_learning_rate": args.min_learning_rate,
             },
         },
     )
@@ -188,7 +206,7 @@ def main() -> None:
     )
     start_time = time.time()
     for epoch in range(args.epochs):
-        fitOneEpoch_EPINN_PhyLoss(
+        _, validation_loss = fitOneEpoch_EPINN_PhyLoss(
             model=model,
             modelLoss=modelLoss,
             lossHistory=lossHistory,
@@ -205,7 +223,7 @@ def main() -> None:
                 None if args.gradient_clip <= 0.0 else args.gradient_clip
             ),
         )
-        lr_scheduler.step()
+        lr_scheduler.step(validation_loss)
     print(f"E-PINN training time: {time.time() - start_time:.2f} s")
 
 
