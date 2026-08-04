@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from torch.utils.data import DataLoader
 from config import CaseConfig
 from nets.EPINN_Loss import EPINN_MDOFSys_DisIncrement_PhyLoss
 from nets.EPINN_Net import EPINN_PhyLSTM_NetBody
-from utils.callbacks import LossHistory
+from utils.callbacks import LossHistory, save_training_configuration
 from utils.Dataloader import DynAnaDataset, DynAna_dataset_collate
 from utils.DataPreProcess import (
     as_torch_case,
@@ -142,11 +143,44 @@ def main() -> None:
         "trend_weight": args.trend_weight,
         "output_increment_scale": float(config.displacement_increment_scale),
     }
+    configuration_path = save_training_configuration(
+        lossHistory.save_path,
+        {
+            "script": Path(__file__).name,
+            "command_line_arguments": sys.argv[1:],
+            "parsed_arguments": vars(args),
+            "device": str(device),
+            "cuda_device": (
+                torch.cuda.get_device_name(device)
+                if device.type == "cuda"
+                else None
+            ),
+            "data_split": {
+                "train_indices": split.train.tolist(),
+                "validation_indices": split.validation.tolist(),
+                "test_indices": split.test.tolist(),
+            },
+            "model_and_loss": checkpoint_data,
+            "optimizer": {
+                "name": "Adam",
+                "learning_rate": args.learning_rate,
+                "weight_decay": 5.0e-4,
+                "betas": [0.9, 0.999],
+                "eps": 1.0e-8,
+            },
+            "scheduler": {
+                "name": "StepLR",
+                "step_size": 2,
+                "gamma": 0.98,
+            },
+        },
+    )
 
     print(
         f"Device: {device}; train/validation/test = "
         f"{len(split.train)}/{len(split.validation)}/{len(split.test)}"
     )
+    print(f"Training configuration: {configuration_path}")
     print(
         "E-PINN: elastic displacement increments -> LSTM -> nonlinear total "
         "increments; accumulated full displacement is trained against SCL "

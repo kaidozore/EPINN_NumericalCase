@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from datetime import datetime
+import json
 import math
 from pathlib import Path
 import re
@@ -24,6 +25,30 @@ _CHECKPOINT_PATTERN = re.compile(
     r"^ep(?P<epoch>\d+)-train(?P<train>[-+0-9.eE]+)-"
     r"val(?P<val>[-+0-9.eE]+)\.pth$"
 )
+
+
+def save_training_configuration(
+    output_dir: str | Path,
+    configuration: Mapping[str, object],
+    filename: str = "training_config.json",
+) -> Path:
+    """Atomically save the exact settings used to start a training run."""
+
+    directory = Path(output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    output = directory / filename
+    temporary = output.with_suffix(output.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(
+            dict(configuration),
+            stream,
+            indent=2,
+            ensure_ascii=False,
+            default=str,
+        )
+        stream.write("\n")
+    temporary.replace(output)
+    return output
 
 
 def save_top_k_checkpoint(
