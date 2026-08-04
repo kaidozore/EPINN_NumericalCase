@@ -35,6 +35,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--time-truncation", type=int, default=600)
     parser.add_argument("--learning-rate", type=float, default=1.0e-2)
     parser.add_argument(
+        "--trend-window-size", type=int, default=26,
+        help="Steps per local full-displacement trend window.",
+    )
+    parser.add_argument(
+        "--trend-weight", type=float, default=0.05,
+        help="Weight of the local full-displacement trend Log-Cosh term.",
+    )
+    parser.add_argument(
         "--gradient-clip", type=float, default=1.0,
         help="Maximum global gradient norm; use 0 to disable clipping.",
     )
@@ -97,7 +105,11 @@ def main() -> None:
         hidden_size=args.hidden_size,
         fc_size=args.fc_size,
     ).double().to(device)
-    modelLoss = EPINN_MDOFSys_DisIncrement_PhyLoss().double().to(device)
+    modelLoss = EPINN_MDOFSys_DisIncrement_PhyLoss(
+        displacement_scale=config.displacement_scale,
+        trend_window_size=args.trend_window_size,
+        trend_weight=args.trend_weight,
+    ).double().to(device)
     optimizer = optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=5.0e-4
     )
@@ -113,7 +125,10 @@ def main() -> None:
         "case_config": config.to_dict(),
         "network_input": "elastic_displacement_increment_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_increment",
-        "loss": "mean((LSTM_increment-SCL_increment)^2)",
+        "loss": (
+            "LogCosh((cumsum(LSTM_increment)-SCL_displacement)/"
+            "fixed_displacement_scale) + trend_weight*local_trend_LogCosh"
+        ),
         "input_increment_scale": float(config.displacement_increment_scale),
         "hidden_size": args.hidden_size,
         "fc_size": args.fc_size,
@@ -122,6 +137,9 @@ def main() -> None:
         "delta_t": data.delta_t,
         "tbptt_length": args.tbptt_length,
         "gradient_clip": args.gradient_clip,
+        "displacement_scale": float(config.displacement_scale),
+        "trend_window_size": args.trend_window_size,
+        "trend_weight": args.trend_weight,
         "output_increment_scale": float(config.displacement_increment_scale),
     }
 
@@ -131,7 +149,8 @@ def main() -> None:
     )
     print(
         "E-PINN: elastic displacement increments -> LSTM -> nonlinear total "
-        "increments; loss = MSE(LSTM increment - SCL increment)."
+        "increments; accumulated full displacement is trained against SCL "
+        "with fixed-scale Log-Cosh and a local trend term."
     )
     start_time = time.time()
     for epoch in range(args.epochs):

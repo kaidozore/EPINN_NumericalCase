@@ -225,13 +225,30 @@ def main() -> None:
         **common,
     ).double()
     epinn_prediction = epinn(load)
-    epinn_loss = EPINN_MDOFSys_DisIncrement_PhyLoss()(epinn_prediction)
+    epinn_loss_module = EPINN_MDOFSys_DisIncrement_PhyLoss(
+        displacement_scale=config.displacement_scale,
+        trend_window_size=min(26, check_steps),
+    ).double()
+    epinn_target = {
+        "dis": torch.as_tensor(
+            data.displacement[:1, :check_steps], dtype=torch.float64
+        )
+    }
+    epinn_loss, epinn_metrics = epinn_loss_module(
+        epinn_prediction, epinn_target, return_metrics=True
+    )
     epinn_loss.backward()
     if not torch.isfinite(epinn_loss) or not finite_gradients(epinn):
         raise AssertionError("E-PINN forward/backward check failed.")
+    if not all(
+        torch.isfinite(value) for value in epinn_metrics.values()
+    ):
+        raise AssertionError("E-PINN monitoring metrics are invalid.")
     print(
         f"[PASS] E-PINN forward/SCL/loss/backward, "
-        f"loss={epinn_loss.item():.6e}."
+        f"loss={epinn_loss.item():.6e}, "
+        "true displacement correlation="
+        f"{epinn_metrics['true_displacement_correlation'].item():.6f}."
     )
 
     # Chunking must preserve forward histories before optimizer updates.
