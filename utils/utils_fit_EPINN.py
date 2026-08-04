@@ -121,17 +121,32 @@ def fitOneEpoch_EPINN_PhyLoss(
     )
     metric_text = ""
     if train_metrics:
-        metric_text = (
-            " - full/trend: "
-            f"{train_metrics['full_log_cosh']:.3e}/"
-            f"{train_metrics['weighted_trend_log_cosh']:.3e}"
-            " - true_rrmse: "
-            f"{train_metrics['true_displacement_rrmse_percent']:.3f}%/"
-            f"{val_metrics['true_displacement_rrmse_percent']:.3f}%"
-            " - true_corr: "
-            f"{train_metrics['true_displacement_correlation']:.4f}/"
-            f"{val_metrics['true_displacement_correlation']:.4f}"
+        components = []
+        if "full_log_cosh" in train_metrics:
+            components.append(
+                "full/trend: "
+                f"{train_metrics['full_log_cosh']:.3e}/"
+                f"{train_metrics['weighted_trend_log_cosh']:.3e}"
+            )
+        elif "full_mse" in train_metrics:
+            components.append(f"full_mse: {train_metrics['full_mse']:.3e}")
+        components.extend(
+            [
+                "scl_rmse: "
+                f"{train_metrics['scl_displacement_rmse_m']:.3e}/"
+                f"{val_metrics['scl_displacement_rmse_m']:.3e} m",
+                "true_rrmse: "
+                f"{train_metrics['true_displacement_rrmse_percent']:.3f}%/"
+                f"{val_metrics['true_displacement_rrmse_percent']:.3f}%",
+                "scl_corr: "
+                f"{train_metrics['scl_displacement_correlation']:.4f}/"
+                f"{val_metrics['scl_displacement_correlation']:.4f}",
+                "true_corr: "
+                f"{train_metrics['true_displacement_correlation']:.4f}/"
+                f"{val_metrics['true_displacement_correlation']:.4f}",
+            ]
         )
+        metric_text = " - " + " - ".join(components)
     print(
         f"Epoch {epoch + 1}/{endEpoch} - "
         f"loss: {train_loss:.6e} - val_loss: {val_loss:.6e} - "

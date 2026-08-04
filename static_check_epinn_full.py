@@ -40,7 +40,14 @@ def main() -> None:
         dtype=torch.float64,
     )
     prediction = model(load)
-    loss = EPINN_MDOFSys_FullDis_PhyLoss()(prediction)
+    target = {
+        "dis": torch.as_tensor(
+            data.displacement[:1, :steps], dtype=torch.float64
+        )
+    }
+    loss, metrics = EPINN_MDOFSys_FullDis_PhyLoss()(
+        prediction, target, return_metrics=True
+    )
     loss.backward()
     gradients = [
         parameter.grad
@@ -52,9 +59,13 @@ def main() -> None:
         for value in gradients
     ):
         raise AssertionError("Full E-PINN forward/backward check failed.")
+    if not all(torch.isfinite(value) for value in metrics.values()):
+        raise AssertionError("Full E-PINN monitoring metrics are invalid.")
     print(
         "[PASS] Full E-PINN forward/SCL/loss/backward, "
-        f"loss={float(loss.detach()):.6e}."
+        f"loss={float(loss.detach()):.6e}, "
+        "true displacement correlation="
+        f"{float(metrics['true_displacement_correlation']):.6f}."
     )
 
     chunk_length = max(4, steps // 2)
