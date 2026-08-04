@@ -226,8 +226,9 @@ def main() -> None:
     ).double()
     epinn_prediction = epinn(load)
     epinn_loss_module = EPINN_MDOFSys_DisIncrement_PhyLoss(
+        increment_scale=config.displacement_increment_scale,
         displacement_scale=config.displacement_scale,
-        trend_window_size=min(26, check_steps),
+        full_loss_weight=0.2,
     ).double()
     epinn_target = {
         "dis": torch.as_tensor(

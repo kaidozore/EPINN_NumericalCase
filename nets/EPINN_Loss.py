@@ -1,4 +1,4 @@
-"""Full-displacement consistency loss for the increment-output E-PINN."""
+"""Increment-first fixed-point loss for the increment-output E-PINN."""
 
 from __future__ import annotations
 
@@ -10,27 +10,37 @@ import torch.nn.functional as F
 
 
 class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
-    """Train accumulated increments against the fixed-SCL displacement."""
+    """Match LSTM and fixed-SCL increments with a full-response constraint."""
 
     reports_metrics = True
 
     def __init__(
         self,
+        increment_scale: float | torch.Tensor = 1.0,
         displacement_scale: float | torch.Tensor = 1.0,
-        trend_window_size: int = 26,
-        trend_weight: float = 0.05,
+        full_loss_weight: float = 0.2,
     ) -> None:
         super().__init__()
-        scale = torch.as_tensor(displacement_scale).reshape(-1)
-        if scale.numel() < 1 or torch.any(scale <= 0.0):
-            raise ValueError("displacement_scale must contain positive values.")
-        self.register_buffer("displacement_scale", scale.reshape(1, 1, -1))
-        self.trend_window_size = int(trend_window_size)
-        self.trend_weight = float(trend_weight)
-        if self.trend_window_size < 2:
-            raise ValueError("trend_window_size must be at least two.")
-        if self.trend_weight < 0.0:
-            raise ValueError("trend_weight must be non-negative.")
+        increment_scale = torch.as_tensor(increment_scale).reshape(-1)
+        displacement_scale = torch.as_tensor(displacement_scale).reshape(-1)
+        if increment_scale.numel() < 1 or torch.any(increment_scale <= 0.0):
+            raise ValueError("increment_scale must contain positive values.")
+        if (
+            displacement_scale.numel() < 1
+            or torch.any(displacement_scale <= 0.0)
+        ):
+            raise ValueError(
+                "displacement_scale must contain positive values."
+            )
+        self.register_buffer(
+            "increment_scale", increment_scale.reshape(1, 1, -1)
+        )
+        self.register_buffer(
+            "displacement_scale", displacement_scale.reshape(1, 1, -1)
+        )
+        self.full_loss_weight = float(full_loss_weight)
+        if self.full_loss_weight < 0.0:
+            raise ValueError("full_loss_weight must be non-negative.")
 
     @staticmethod
     def _stable_log_cosh(error: torch.Tensor) -> torch.Tensor:
@@ -63,15 +73,19 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
             return torch.mean(correlation[valid])
         return prediction.new_zeros(())
 
-    def _scale_for(self, displacement: torch.Tensor) -> torch.Tensor:
-        scale = self.displacement_scale.to(
-            dtype=displacement.dtype, device=displacement.device
+    @staticmethod
+    def _scale_for(
+        stored_scale: torch.Tensor,
+        response: torch.Tensor,
+    ) -> torch.Tensor:
+        scale = stored_scale.to(
+            dtype=response.dtype, device=response.device
         )
         if scale.shape[-1] == 1:
             return scale
-        if scale.shape[-1] != displacement.shape[-1]:
+        if scale.shape[-1] != response.shape[-1]:
             raise ValueError(
-                "displacement_scale must be scalar or match the DOF count."
+                "A physical scale must be scalar or match the DOF count."
             )
         return scale
 
@@ -81,53 +95,52 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         target: dict[str, torch.Tensor] | None = None,
         return_metrics: bool = False,
     ):
+        predicted_increment = prediction["dis_increment_nl"]
+        scl_increment = prediction["dis_increment_scl"]
         predicted_displacement = prediction["dis_nl"]
         scl_displacement = prediction["dis"]
-        scale = self._scale_for(predicted_displacement)
-        predicted_normalized = predicted_displacement / scale
-        scl_normalized = scl_displacement / scale
 
-        full_error = predicted_normalized - scl_normalized
+        increment_scale = self._scale_for(
+            self.increment_scale, predicted_increment
+        )
+        displacement_scale = self._scale_for(
+            self.displacement_scale, predicted_displacement
+        )
+
+        # Keep the first point because, after the first TBPTT chunk, it is the
+        # physical increment across a chunk boundary.  Only the single global
+        # initial point is trivially zero, which has negligible mean weight.
+        increment_error = (
+            predicted_increment - scl_increment
+        ) / increment_scale
+        increment_log_cosh = torch.mean(
+            self._stable_log_cosh(increment_error)
+        )
+
+        full_error = (
+            predicted_displacement - scl_displacement
+        ) / displacement_scale
         full_log_cosh = torch.mean(self._stable_log_cosh(full_error))
-
-        sequence_length = predicted_displacement.shape[1]
-        window_count = sequence_length // self.trend_window_size
-        if window_count > 0 and self.trend_weight > 0.0:
-            valid_length = window_count * self.trend_window_size
-            shape = (
-                predicted_displacement.shape[0],
-                window_count,
-                self.trend_window_size,
-                predicted_displacement.shape[2],
-            )
-            predicted_windows = predicted_normalized[:, :valid_length].reshape(
-                shape
-            )
-            scl_windows = scl_normalized[:, :valid_length].reshape(shape)
-            predicted_trend = (
-                predicted_windows - predicted_windows[:, :, :1]
-            )
-            scl_trend = scl_windows - scl_windows[:, :, :1]
-            trend_log_cosh = torch.mean(
-                self._stable_log_cosh(predicted_trend - scl_trend)
-            )
-        else:
-            trend_log_cosh = full_log_cosh.new_zeros(())
-
-        weighted_trend = self.trend_weight * trend_log_cosh
-        total_loss = full_log_cosh + weighted_trend
+        weighted_full = self.full_loss_weight * full_log_cosh
+        total_loss = increment_log_cosh + weighted_full
         if not return_metrics:
             return total_loss
 
         with torch.no_grad():
             scl_error = predicted_displacement - scl_displacement
+            scl_increment_error = predicted_increment - scl_increment
             scl_rmse = torch.sqrt(torch.mean(scl_error.pow(2)))
+            scl_increment_rmse = torch.sqrt(
+                torch.mean(scl_increment_error.pow(2))
+            )
             scl_correlation = self._mean_time_correlation(
                 predicted_displacement, scl_displacement
             )
             metrics = {
+                "increment_log_cosh": increment_log_cosh.detach(),
                 "full_log_cosh": full_log_cosh.detach(),
-                "weighted_trend_log_cosh": weighted_trend.detach(),
+                "weighted_full_log_cosh": weighted_full.detach(),
+                "scl_increment_rmse_m": scl_increment_rmse,
                 "scl_displacement_rmse_m": scl_rmse,
                 "scl_displacement_correlation": scl_correlation,
             }

@@ -41,12 +41,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr-threshold", type=float, default=1.0e-3)
     parser.add_argument("--lr-cooldown", type=int, default=2)
     parser.add_argument(
-        "--trend-window-size", type=int, default=26,
-        help="Steps per local full-displacement trend window.",
-    )
-    parser.add_argument(
-        "--trend-weight", type=float, default=0.05,
-        help="Weight of the local full-displacement trend Log-Cosh term.",
+        "--full-loss-weight", type=float, default=0.2,
+        help=(
+            "Weight of the auxiliary full-displacement fixed-point "
+            "Log-Cosh term."
+        ),
     )
     parser.add_argument(
         "--gradient-clip", type=float, default=1.0,
@@ -112,9 +111,9 @@ def main() -> None:
         fc_size=args.fc_size,
     ).double().to(device)
     modelLoss = EPINN_MDOFSys_DisIncrement_PhyLoss(
+        increment_scale=config.displacement_increment_scale,
         displacement_scale=config.displacement_scale,
-        trend_window_size=args.trend_window_size,
-        trend_weight=args.trend_weight,
+        full_loss_weight=args.full_loss_weight,
     ).double().to(device)
     optimizer = optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=5.0e-4
@@ -139,8 +138,10 @@ def main() -> None:
         "network_input": "elastic_displacement_increment_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_increment",
         "loss": (
+            "LogCosh((LSTM_increment-SCL_increment)/"
+            "fixed_increment_scale) + full_loss_weight*"
             "LogCosh((cumsum(LSTM_increment)-SCL_displacement)/"
-            "fixed_displacement_scale) + trend_weight*local_trend_LogCosh"
+            "fixed_displacement_scale)"
         ),
         "input_increment_scale": float(config.displacement_increment_scale),
         "hidden_size": args.hidden_size,
@@ -150,9 +151,9 @@ def main() -> None:
         "delta_t": data.delta_t,
         "tbptt_length": args.tbptt_length,
         "gradient_clip": args.gradient_clip,
+        "increment_scale": float(config.displacement_increment_scale),
         "displacement_scale": float(config.displacement_scale),
-        "trend_window_size": args.trend_window_size,
-        "trend_weight": args.trend_weight,
+        "full_loss_weight": args.full_loss_weight,
         "output_increment_scale": float(config.displacement_increment_scale),
     }
     configuration_path = save_training_configuration(
@@ -201,8 +202,9 @@ def main() -> None:
     print(f"Training configuration: {configuration_path}")
     print(
         "E-PINN: elastic displacement increments -> LSTM -> nonlinear total "
-        "increments; accumulated full displacement is trained against SCL "
-        "with fixed-scale Log-Cosh and a local trend term."
+        "increments; direct fixed-scale increment consistency is the primary "
+        "SCL loss, with weighted full-displacement consistency to prevent "
+        "long-term drift."
     )
     start_time = time.time()
     for epoch in range(args.epochs):

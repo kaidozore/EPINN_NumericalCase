@@ -122,11 +122,16 @@ def fitOneEpoch_EPINN_PhyLoss(
     metric_text = ""
     if train_metrics:
         components = []
-        if "full_log_cosh" in train_metrics:
+        if "increment_log_cosh" in train_metrics:
             components.append(
-                "full/trend: "
-                f"{train_metrics['full_log_cosh']:.3e}/"
-                f"{train_metrics['weighted_trend_log_cosh']:.3e}"
+                "increment/full: "
+                f"{train_metrics['increment_log_cosh']:.3e}/"
+                f"{train_metrics['weighted_full_log_cosh']:.3e}"
+            )
+            components.append(
+                "scl_increment_rmse: "
+                f"{train_metrics['scl_increment_rmse_m']:.3e}/"
+                f"{val_metrics['scl_increment_rmse_m']:.3e} m"
             )
         elif "full_mse" in train_metrics:
             components.append(f"full_mse: {train_metrics['full_mse']:.3e}")
