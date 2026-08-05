@@ -46,6 +46,12 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         self.LSTM_Module = LSTM_FC_Module(
             nLoad, nLoadNL, hidden_size, fc_size
         )
+        # Directly accumulated increments are highly sensitive to even a
+        # small persistent output-head bias over a 5000-step history.  Start
+        # close to zero while retaining nonzero weights so gradients reach
+        # the FC and LSTM layers from the first optimizer step.
+        nn.init.xavier_uniform_(self.LSTM_Module.FC2.weight, gain=1.0e-2)
+        nn.init.zeros_(self.LSTM_Module.FC2.bias)
         self.Constitutive_Module = FiberSteel02Module(
             stiffness, fiber, steel
         )
