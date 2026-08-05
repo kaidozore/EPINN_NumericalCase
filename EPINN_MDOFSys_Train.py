@@ -41,11 +41,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr-threshold", type=float, default=1.0e-3)
     parser.add_argument("--lr-cooldown", type=int, default=2)
     parser.add_argument(
-        "--increment-loss-weight", type=float, default=0.1,
-        help=(
-            "Weight of the auxiliary increment fixed-point "
-            "Log-Cosh term."
-        ),
+        "--increment-loss-weight", type=float, default=1.0,
+        help="Weight of the primary normalized increment MSE term.",
+    )
+    parser.add_argument(
+        "--anchor-loss-weight", type=float, default=0.05,
+        help="Weight of the sparse displacement-anchor MSE term.",
+    )
+    parser.add_argument(
+        "--anchor-stride", type=int, default=100,
+        help="Time-step spacing between displacement anchors.",
     )
     parser.add_argument(
         "--gradient-clip", type=float, default=1.0,
@@ -114,6 +119,8 @@ def main() -> None:
         increment_scale=config.displacement_increment_scale,
         displacement_scale=config.displacement_scale,
         increment_loss_weight=args.increment_loss_weight,
+        anchor_loss_weight=args.anchor_loss_weight,
+        anchor_stride=args.anchor_stride,
     ).double().to(device)
     optimizer = optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=5.0e-4
@@ -138,10 +145,10 @@ def main() -> None:
         "network_input": "elastic_displacement_increment_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_increment",
         "loss": (
-            "MSE((cumsum(LSTM_increment)-SCL_displacement)/"
-            "fixed_displacement_scale) + increment_loss_weight*"
-            "MSE((LSTM_increment-SCL_increment)/"
-            "fixed_increment_scale)"
+            "increment_loss_weight*MSE((LSTM_increment-SCL_increment)/"
+            "fixed_increment_scale) + anchor_loss_weight*MSE(" 
+            "(cumsum(LSTM_increment)[anchors]-SCL_displacement[anchors])/"
+            "fixed_displacement_scale)"
         ),
         "input_increment_scale": float(config.displacement_increment_scale),
         "hidden_size": args.hidden_size,
@@ -154,6 +161,8 @@ def main() -> None:
         "increment_scale": float(config.displacement_increment_scale),
         "displacement_scale": float(config.displacement_scale),
         "increment_loss_weight": args.increment_loss_weight,
+        "anchor_loss_weight": args.anchor_loss_weight,
+        "anchor_stride": args.anchor_stride,
         "output_increment_scale": float(config.displacement_increment_scale),
         "output_head_init_gain": float(model.output_head_init_gain),
     }
@@ -203,8 +212,7 @@ def main() -> None:
     print(f"Training configuration: {configuration_path}")
     print(
         "E-PINN: elastic displacement increments -> LSTM -> nonlinear total "
-        "increments; full-displacement fixed-point consistency is the primary "
-        "SCL loss, with a local increment consistency auxiliary term."
+        "increments; sparse displacement anchors control long-term drift."
     )
     start_time = time.time()
     for epoch in range(args.epochs):

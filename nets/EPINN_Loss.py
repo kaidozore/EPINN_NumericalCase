@@ -1,4 +1,4 @@
-"""Full-response-first MSE loss for the increment-output E-PINN."""
+"""Increment-primary, block-anchor MSE loss for the increment-output E-PINN."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import torch.nn as nn
 
 
 class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
-    """Match full LSTM/SCL responses, with increment consistency auxiliary."""
+    """Use local increment consistency with sparse full-displacement anchors."""
 
     reports_metrics = True
 
@@ -15,7 +15,9 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         self,
         increment_scale: float | torch.Tensor = 1.0,
         displacement_scale: float | torch.Tensor = 1.0,
-        increment_loss_weight: float = 0.1,
+        increment_loss_weight: float = 1.0,
+        anchor_loss_weight: float = 0.05,
+        anchor_stride: int = 100,
     ) -> None:
         super().__init__()
         increment_scale = torch.as_tensor(increment_scale).reshape(-1)
@@ -38,6 +40,12 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         self.increment_loss_weight = float(increment_loss_weight)
         if self.increment_loss_weight < 0.0:
             raise ValueError("increment_loss_weight must be non-negative.")
+        self.anchor_loss_weight = float(anchor_loss_weight)
+        if self.anchor_loss_weight < 0.0:
+            raise ValueError("anchor_loss_weight must be non-negative.")
+        self.anchor_stride = int(anchor_stride)
+        if self.anchor_stride < 1:
+            raise ValueError("anchor_stride must be a positive integer.")
 
     @staticmethod
     def _mse(error: torch.Tensor) -> torch.Tensor:
@@ -111,16 +119,27 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         ) / increment_scale
         increment_mse = self._mse(increment_error)
 
-        full_error = (
-            predicted_displacement - scl_displacement
+        # Use sparse displacement anchors instead of a full-sequence loss.
+        # This controls long-term drift while keeping the local increment term
+        # as the primary objective for the increment-output network.
+        anchor_indices = torch.arange(
+            0, predicted_displacement.shape[1], self.anchor_stride,
+            device=predicted_displacement.device,
+        )
+        if anchor_indices[-1] != predicted_displacement.shape[1] - 1:
+            anchor_indices = torch.cat(
+                [anchor_indices, anchor_indices.new_tensor(
+                    [predicted_displacement.shape[1] - 1]
+                )]
+            )
+        anchor_error = (
+            predicted_displacement[:, anchor_indices]
+            - scl_displacement[:, anchor_indices]
         ) / displacement_scale
-        full_mse = self._mse(full_error)
-        # The accumulated displacement is the primary fixed-point quantity.
-        # With TBPTT the gradient is deliberately detached at chunk boundaries,
-        # so the auxiliary increment term supplies local, well-conditioned
-        # training information without replacing the global response target.
+        anchor_mse = self._mse(anchor_error)
         weighted_increment = self.increment_loss_weight * increment_mse
-        total_loss = full_mse + weighted_increment
+        weighted_anchor = self.anchor_loss_weight * anchor_mse
+        total_loss = weighted_increment + weighted_anchor
         if not return_metrics:
             return total_loss
 
@@ -136,8 +155,9 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
             )
             metrics = {
                 "increment_mse": increment_mse.detach(),
-                "full_mse": full_mse.detach(),
+                "anchor_mse": anchor_mse.detach(),
                 "weighted_increment_mse": weighted_increment.detach(),
+                "weighted_anchor_mse": weighted_anchor.detach(),
                 "scl_increment_rmse_m": scl_increment_rmse,
                 "scl_displacement_rmse_m": scl_rmse,
                 "scl_displacement_correlation": scl_correlation,

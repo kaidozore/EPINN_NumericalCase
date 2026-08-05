@@ -142,17 +142,17 @@ def fitOneEpoch_EPINN_PhyLoss(
         components = []
         if "increment_mse" in train_metrics:
             components.append(
-                "full/increment: "
-                f"{train_metrics['full_mse']:.3e}/"
-                f"{train_metrics['weighted_increment_mse']:.3e}"
+                "increment/anchor: "
+                f"{train_metrics['weighted_increment_mse']:.3e}/"
+                f"{train_metrics['weighted_anchor_mse']:.3e}"
             )
             components.append(
                 "scl_increment_rmse: "
                 f"{train_metrics['scl_increment_rmse_m']:.3e}/"
                 f"{val_metrics['scl_increment_rmse_m']:.3e} m"
             )
-        elif "full_mse" in train_metrics:
-            components.append(f"full_mse: {train_metrics['full_mse']:.3e}")
+        elif "anchor_mse" in train_metrics:
+            components.append(f"anchor_mse: {train_metrics['anchor_mse']:.3e}")
         components.extend(
             [
                 "scl_rmse: "
