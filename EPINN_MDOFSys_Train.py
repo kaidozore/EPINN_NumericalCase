@@ -45,12 +45,27 @@ def parse_args() -> argparse.Namespace:
         help="Weight of the primary normalized increment MSE term.",
     )
     parser.add_argument(
-        "--anchor-loss-weight", type=float, default=0.05,
+        "--anchor-loss-weight", type=float, default=0.002,
         help="Weight of the sparse displacement-anchor MSE term.",
     )
     parser.add_argument(
         "--anchor-stride", type=int, default=100,
         help="Time-step spacing between displacement anchors.",
+    )
+    parser.add_argument(
+        "--labelled-samples", type=int, default=10,
+        help=(
+            "Number of training samples carrying MATLAB response labels; "
+            "use 0 for physics-only training."
+        ),
+    )
+    parser.add_argument(
+        "--label-increment-loss-weight", type=float, default=0.2,
+        help="Weight of labelled displacement-increment MSE.",
+    )
+    parser.add_argument(
+        "--label-anchor-loss-weight", type=float, default=0.01,
+        help="Weight of labelled sparse full-displacement anchor MSE.",
     )
     parser.add_argument(
         "--gradient-clip", type=float, default=1.0,
@@ -77,6 +92,7 @@ def main() -> None:
         num_workers=args.num_workers,
         time_truncation=args.time_truncation,
         sequence_length=args.sequence_length,
+        labelled_sample_count=args.labelled_samples,
     )
     seed_everything(config.random_seed)
     device = torch.device(args.device)
@@ -88,7 +104,9 @@ def main() -> None:
     # Use one fixed physical reference force for all samples and DOFs.  A
     # doubled load therefore remains doubled after scaling.
     tensors = as_torch_case(data, device)
-    train_dataset = DynAnaDataset(data, split.train)
+    train_dataset = DynAnaDataset(
+        data, split.train, labelled_indices=split.labelled
+    )
     val_dataset = DynAnaDataset(data, split.validation)
     common_loader = {
         "batch_size": config.batch_size,
@@ -121,6 +139,8 @@ def main() -> None:
         increment_loss_weight=args.increment_loss_weight,
         anchor_loss_weight=args.anchor_loss_weight,
         anchor_stride=args.anchor_stride,
+        label_increment_loss_weight=args.label_increment_loss_weight,
+        label_anchor_loss_weight=args.label_anchor_loss_weight,
     ).double().to(device)
     optimizer = optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=5.0e-4
@@ -148,7 +168,10 @@ def main() -> None:
             "increment_loss_weight*MSE((LSTM_increment-SCL_increment)/"
             "fixed_increment_scale) + anchor_loss_weight*MSE(" 
             "(cumsum(LSTM_increment)[anchors]-SCL_displacement[anchors])/"
-            "fixed_displacement_scale)"
+            "fixed_displacement_scale) + label_increment_loss_weight*"
+            "MSE((LSTM_increment-labelled_increment)/fixed_increment_scale) "
+            "+ label_anchor_loss_weight*MSE((LSTM_displacement[anchors]-"
+            "labelled_displacement[anchors])/fixed_displacement_scale)"
         ),
         "input_increment_scale": float(config.displacement_increment_scale),
         "hidden_size": args.hidden_size,
@@ -163,6 +186,9 @@ def main() -> None:
         "increment_loss_weight": args.increment_loss_weight,
         "anchor_loss_weight": args.anchor_loss_weight,
         "anchor_stride": args.anchor_stride,
+        "labelled_samples": args.labelled_samples,
+        "label_increment_loss_weight": args.label_increment_loss_weight,
+        "label_anchor_loss_weight": args.label_anchor_loss_weight,
         "output_increment_scale": float(config.displacement_increment_scale),
         "output_head_init_gain": float(model.output_head_init_gain),
     }
@@ -182,6 +208,7 @@ def main() -> None:
                 "train_indices": split.train.tolist(),
                 "validation_indices": split.validation.tolist(),
                 "test_indices": split.test.tolist(),
+                "labelled_train_indices": split.labelled.tolist(),
             },
             "model_and_loss": checkpoint_data,
             "optimizer": {
@@ -208,6 +235,10 @@ def main() -> None:
     print(
         f"Device: {device}; train/validation/test = "
         f"{len(split.train)}/{len(split.validation)}/{len(split.test)}"
+    )
+    print(
+        f"Labelled training samples: {len(split.labelled)}; "
+        f"indices = {split.labelled.tolist()}"
     )
     print(f"Training configuration: {configuration_path}")
     print(

@@ -34,6 +34,8 @@ def _run_epoch(
             reports_metrics = getattr(modelLoss, "reports_metrics", False)
             if reports_metrics:
                 target_displacement = target["dis"].to(device)
+                target_increment = target["dis_increment"].to(device)
+                target_labelled = target["labelled"].to(device)
             total_steps = loads.shape[-1]
             chunk_length = total_steps if tbptt_length is None else tbptt_length
             state = None
@@ -50,6 +52,8 @@ def _run_epoch(
                 if reports_metrics:
                     target_chunk = {
                         "dis": target_displacement[:, start:stop],
+                        "dis_increment": target_increment[:, start:stop],
+                        "labelled": target_labelled,
                     }
                     loss, metrics = modelLoss(
                         prediction,
@@ -150,6 +154,11 @@ def fitOneEpoch_EPINN_PhyLoss(
                 "scl_increment_rmse: "
                 f"{train_metrics['scl_increment_rmse_m']:.3e}/"
                 f"{val_metrics['scl_increment_rmse_m']:.3e} m"
+            )
+            components.append(
+                "label_increment/anchor: "
+                f"{train_metrics['weighted_label_increment_mse']:.3e}/"
+                f"{train_metrics['weighted_label_anchor_mse']:.3e}"
             )
         elif "anchor_mse" in train_metrics:
             components.append(f"anchor_mse: {train_metrics['anchor_mse']:.3e}")

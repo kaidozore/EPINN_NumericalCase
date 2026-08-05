@@ -16,8 +16,10 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         increment_scale: float | torch.Tensor = 1.0,
         displacement_scale: float | torch.Tensor = 1.0,
         increment_loss_weight: float = 1.0,
-        anchor_loss_weight: float = 0.05,
+        anchor_loss_weight: float = 0.002,
         anchor_stride: int = 100,
+        label_increment_loss_weight: float = 0.2,
+        label_anchor_loss_weight: float = 0.01,
     ) -> None:
         super().__init__()
         increment_scale = torch.as_tensor(increment_scale).reshape(-1)
@@ -46,6 +48,18 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         self.anchor_stride = int(anchor_stride)
         if self.anchor_stride < 1:
             raise ValueError("anchor_stride must be a positive integer.")
+        self.label_increment_loss_weight = float(
+            label_increment_loss_weight
+        )
+        self.label_anchor_loss_weight = float(label_anchor_loss_weight)
+        if self.label_increment_loss_weight < 0.0:
+            raise ValueError(
+                "label_increment_loss_weight must be non-negative."
+            )
+        if self.label_anchor_loss_weight < 0.0:
+            raise ValueError(
+                "label_anchor_loss_weight must be non-negative."
+            )
 
     @staticmethod
     def _mse(error: torch.Tensor) -> torch.Tensor:
@@ -139,7 +153,53 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         anchor_mse = self._mse(anchor_error)
         weighted_increment = self.increment_loss_weight * increment_mse
         weighted_anchor = self.anchor_loss_weight * anchor_mse
-        total_loss = weighted_increment + weighted_anchor
+        label_increment_mse = predicted_increment.new_zeros(())
+        label_anchor_mse = predicted_increment.new_zeros(())
+        labelled_fraction = predicted_increment.new_zeros(())
+        if (
+            target is not None
+            and "labelled" in target
+            and "dis_increment" in target
+            and "dis" in target
+        ):
+            labelled = target["labelled"].to(
+                device=predicted_increment.device, dtype=torch.bool
+            ).reshape(-1)
+            labelled_fraction = labelled.to(
+                predicted_increment.dtype
+            ).mean()
+            if torch.any(labelled):
+                true_increment = target["dis_increment"].to(
+                    dtype=predicted_increment.dtype,
+                    device=predicted_increment.device,
+                )
+                true_displacement = target["dis"].to(
+                    dtype=predicted_displacement.dtype,
+                    device=predicted_displacement.device,
+                )
+                label_increment_error = (
+                    predicted_increment[labelled]
+                    - true_increment[labelled]
+                ) / increment_scale
+                label_increment_mse = self._mse(label_increment_error)
+                label_anchor_error = (
+                    predicted_displacement[labelled][:, anchor_indices]
+                    - true_displacement[labelled][:, anchor_indices]
+                ) / displacement_scale
+                label_anchor_mse = self._mse(label_anchor_error)
+
+        weighted_label_increment = (
+            self.label_increment_loss_weight * label_increment_mse
+        )
+        weighted_label_anchor = (
+            self.label_anchor_loss_weight * label_anchor_mse
+        )
+        total_loss = (
+            weighted_increment
+            + weighted_anchor
+            + weighted_label_increment
+            + weighted_label_anchor
+        )
         if not return_metrics:
             return total_loss
 
@@ -158,6 +218,13 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
                 "anchor_mse": anchor_mse.detach(),
                 "weighted_increment_mse": weighted_increment.detach(),
                 "weighted_anchor_mse": weighted_anchor.detach(),
+                "label_increment_mse": label_increment_mse.detach(),
+                "label_anchor_mse": label_anchor_mse.detach(),
+                "weighted_label_increment_mse": (
+                    weighted_label_increment.detach()
+                ),
+                "weighted_label_anchor_mse": weighted_label_anchor.detach(),
+                "labelled_fraction": labelled_fraction.detach(),
                 "scl_increment_rmse_m": scl_increment_rmse,
                 "scl_displacement_rmse_m": scl_rmse,
                 "scl_displacement_correlation": scl_correlation,
