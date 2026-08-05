@@ -37,11 +37,15 @@ def _run_epoch(
             total_steps = loads.shape[-1]
             chunk_length = total_steps if tbptt_length is None else tbptt_length
             state = None
+            if training:
+                # Keep one set of network parameters throughout the complete
+                # response history.  Each detached TBPTT chunk contributes
+                # its time-weighted gradient, but the optimizer is updated
+                # only once after all chunks in this batch are processed.
+                optimizer.zero_grad(set_to_none=True)
             for start in range(0, total_steps, chunk_length):
                 stop = min(start + chunk_length, total_steps)
                 load_chunk = loads[..., start:stop]
-                if training:
-                    optimizer.zero_grad(set_to_none=True)
                 prediction, state = model.forward_chunk(load_chunk, state)
                 if reports_metrics:
                     target_chunk = {
@@ -56,14 +60,8 @@ def _run_epoch(
                     loss = modelLoss(prediction)
                     metrics = {}
                 if training:
-                    loss.backward()
-                    if gradient_clip is not None:
-                        gradient_norm = torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), gradient_clip
-                        )
-                        gradient_norm_total += float(gradient_norm.detach())
-                        gradient_norm_count += 1
-                    optimizer.step()
+                    chunk_fraction = (stop - start) / total_steps
+                    (loss * chunk_fraction).backward()
                 weight = loads.shape[0] * (stop - start)
                 total += float(loss.detach()) * weight
                 for name, value in metrics.items():
@@ -71,6 +69,14 @@ def _run_epoch(
                         float(value) * weight
                     )
                 count += weight
+            if training:
+                if gradient_clip is not None:
+                    gradient_norm = torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), gradient_clip
+                    )
+                    gradient_norm_total += float(gradient_norm.detach())
+                    gradient_norm_count += 1
+                optimizer.step()
     if count == 0:
         raise ValueError("The data loader did not produce any batches.")
     mean_gradient_norm = (
