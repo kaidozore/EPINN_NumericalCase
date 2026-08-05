@@ -155,6 +155,7 @@ def main() -> None:
         "displacement_scale": float(config.displacement_scale),
         "increment_loss_weight": args.increment_loss_weight,
         "output_increment_scale": float(config.displacement_increment_scale),
+        "output_head_init_gain": float(model.output_head_init_gain),
     }
     configuration_path = save_training_configuration(
         lossHistory.save_path,

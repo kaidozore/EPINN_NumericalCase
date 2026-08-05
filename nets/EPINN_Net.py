@@ -48,9 +48,15 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         )
         # Directly accumulated increments are highly sensitive to even a
         # small persistent output-head bias over a 5000-step history.  Start
-        # close to zero while retaining nonzero weights so gradients reach
-        # the FC and LSTM layers from the first optimizer step.
-        nn.init.xavier_uniform_(self.LSTM_Module.FC2.weight, gain=1.0e-2)
+        # near the elastic response scale, while retaining a conservative
+        # amplitude so the cumulative displacement does not immediately
+        # drift.  The nonzero weights let gradients reach the FC and LSTM
+        # layers from the first optimizer step.
+        self.output_head_init_gain = 5.0e-2
+        nn.init.xavier_uniform_(
+            self.LSTM_Module.FC2.weight,
+            gain=self.output_head_init_gain,
+        )
         nn.init.zeros_(self.LSTM_Module.FC2.bias)
         self.Constitutive_Module = FiberSteel02Module(
             stiffness, fiber, steel
