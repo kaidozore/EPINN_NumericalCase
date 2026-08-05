@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import torch
 
@@ -86,18 +87,29 @@ def fitOneEpoch_PINN_Increment_PhyLoss(
     gradient_clip: float | None = 1.0,
     save_period: int = 1,
 ) -> tuple[float, float]:
+    train_start = time.perf_counter()
     train_loss, train_full_displacement_correlation = _run_epoch(
         model, modelLoss, genTrain, device, optimizer,
         tbptt_length, gradient_clip,
     )
+    train_time_seconds = time.perf_counter() - train_start
+
+    validation_start = time.perf_counter()
     val_loss, val_full_displacement_correlation = _run_epoch(
         model, modelLoss, genVal, device, None, tbptt_length, None,
+    )
+    validation_time_seconds = time.perf_counter() - validation_start
+    epoch_compute_time_seconds = (
+        train_time_seconds + validation_time_seconds
     )
     lossHistory.append_loss(
         epoch + 1,
         train_loss,
         val_loss,
         {
+            "train_time_seconds": train_time_seconds,
+            "validation_time_seconds": validation_time_seconds,
+            "epoch_compute_time_seconds": epoch_compute_time_seconds,
             "train_full_displacement_correlation": (
                 train_full_displacement_correlation
             ),
@@ -112,7 +124,8 @@ def fitOneEpoch_PINN_Increment_PhyLoss(
         "full_dis_corr: "
         f"{train_full_displacement_correlation:.4f}/"
         f"{val_full_displacement_correlation:.4f} - "
-        f"lr: {get_lr(optimizer):.3e}"
+        f"lr: {get_lr(optimizer):.3e} - "
+        f"time: {train_time_seconds:.2f}/{validation_time_seconds:.2f} s"
     )
     if (epoch + 1) % save_period == 0 or epoch + 1 == endEpoch:
         save_top_k_checkpoint(
@@ -124,6 +137,9 @@ def fitOneEpoch_PINN_Increment_PhyLoss(
                 "optimizer_state_dict": optimizer.state_dict(),
                 "train_loss": train_loss,
                 "val_loss": val_loss,
+                "train_time_seconds": train_time_seconds,
+                "validation_time_seconds": validation_time_seconds,
+                "epoch_compute_time_seconds": epoch_compute_time_seconds,
                 "train_full_displacement_correlation": (
                     train_full_displacement_correlation
                 ),

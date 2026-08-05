@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import torch
 
@@ -99,12 +100,20 @@ def fitOneEpoch_EPINN_PhyLoss(
     gradient_clip: float | None = 1.0,
     save_period: int = 1,
 ) -> tuple[float, float]:
+    train_start = time.perf_counter()
     train_loss, train_gradient_norm, train_metrics = _run_epoch(
         model, modelLoss, genTrain, device, optimizer, tbptt_length,
         gradient_clip,
     )
+    train_time_seconds = time.perf_counter() - train_start
+
+    validation_start = time.perf_counter()
     val_loss, _, val_metrics = _run_epoch(
         model, modelLoss, genVal, device, None, tbptt_length, None,
+    )
+    validation_time_seconds = time.perf_counter() - validation_start
+    epoch_compute_time_seconds = (
+        train_time_seconds + validation_time_seconds
     )
     metric_details = {
         **{f"train_{name}": value for name, value in train_metrics.items()},
@@ -115,6 +124,9 @@ def fitOneEpoch_EPINN_PhyLoss(
         train_loss,
         val_loss,
         {
+            "train_time_seconds": train_time_seconds,
+            "validation_time_seconds": validation_time_seconds,
+            "epoch_compute_time_seconds": epoch_compute_time_seconds,
             "train_gradient_norm_before_clip": train_gradient_norm,
             **metric_details,
         },
@@ -156,7 +168,9 @@ def fitOneEpoch_EPINN_PhyLoss(
         f"Epoch {epoch + 1}/{endEpoch} - "
         f"loss: {train_loss:.6e} - val_loss: {val_loss:.6e} - "
         f"grad_norm: {train_gradient_norm:.3e} - "
-        f"lr: {get_lr(optimizer):.3e}{metric_text}"
+        f"lr: {get_lr(optimizer):.3e} - "
+        f"time: {train_time_seconds:.2f}/{validation_time_seconds:.2f} s"
+        f"{metric_text}"
     )
     if (epoch + 1) % save_period == 0 or epoch + 1 == endEpoch:
         save_top_k_checkpoint(
@@ -168,6 +182,9 @@ def fitOneEpoch_EPINN_PhyLoss(
                 "optimizer_state_dict": optimizer.state_dict(),
                 "train_loss": train_loss,
                 "val_loss": val_loss,
+                "train_time_seconds": train_time_seconds,
+                "validation_time_seconds": validation_time_seconds,
+                "epoch_compute_time_seconds": epoch_compute_time_seconds,
                 "train_gradient_norm_before_clip": train_gradient_norm,
                 "gradient_clip": gradient_clip,
                 **metric_details,
