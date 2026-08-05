@@ -164,6 +164,7 @@ def main() -> None:
         "case_config": config.to_dict(),
         "network_input": "elastic_displacement_increment_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_increment",
+        "scl_target_detached": True,
         "loss": (
             "increment_loss_weight*MSE((LSTM_increment-SCL_increment)/"
             "fixed_increment_scale) + anchor_loss_weight*MSE(" 

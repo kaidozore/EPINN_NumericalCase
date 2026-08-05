@@ -114,9 +114,12 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         return_metrics: bool = False,
     ):
         predicted_increment = prediction["dis_increment_nl"]
-        scl_increment = prediction["dis_increment_scl"]
+        # Treat the SCL response as a fixed Picard target during each
+        # optimizer update.  Its forward value still contains the current
+        # Steel02/SCL physics, but gradients do not co-adapt the target branch.
+        scl_increment = prediction["dis_increment_scl"].detach()
         predicted_displacement = prediction["dis_nl"]
-        scl_displacement = prediction["dis"]
+        scl_displacement = prediction["dis"].detach()
 
         increment_scale = self._scale_for(
             self.increment_scale, predicted_increment

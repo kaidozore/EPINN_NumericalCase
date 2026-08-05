@@ -44,7 +44,10 @@ class EPINN_MDOFSys_FullDis_PhyLoss(nn.Module):
         return_metrics: bool = False,
     ):
         predicted_displacement = prediction["dis_nl"]
-        scl_displacement = prediction["dis"]
+        # Fixed-target (Picard) training: retain the nonlinear SCL forward
+        # response while preventing the target branch from co-adapting in the
+        # same backward pass as the LSTM prediction.
+        scl_displacement = prediction["dis"].detach()
         scl_error = predicted_displacement - scl_displacement
         loss = torch.mean(scl_error.pow(2))
         if not return_metrics:

@@ -120,6 +120,7 @@ def main() -> None:
         "case_config": config.to_dict(),
         "network_input": "elastic_total_displacement_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement",
+        "scl_target_detached": True,
         "loss": "mean((LSTM_displacement-SCL_displacement)^2)",
         "input_increment_scale": float(config.displacement_increment_scale),
         "input_displacement_scale": float(config.displacement_scale),
