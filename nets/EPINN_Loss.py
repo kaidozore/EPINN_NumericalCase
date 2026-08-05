@@ -1,4 +1,4 @@
-"""Increment-first fixed-point loss for the increment-output E-PINN."""
+"""Full-response-first fixed-point loss for the increment-output E-PINN."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 
 class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
-    """Match LSTM and fixed-SCL increments with a full-response constraint."""
+    """Match full LSTM/SCL responses, with increment consistency auxiliary."""
 
     reports_metrics = True
 
@@ -18,7 +18,7 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         self,
         increment_scale: float | torch.Tensor = 1.0,
         displacement_scale: float | torch.Tensor = 1.0,
-        full_loss_weight: float = 0.2,
+        increment_loss_weight: float = 0.1,
     ) -> None:
         super().__init__()
         increment_scale = torch.as_tensor(increment_scale).reshape(-1)
@@ -38,9 +38,9 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         self.register_buffer(
             "displacement_scale", displacement_scale.reshape(1, 1, -1)
         )
-        self.full_loss_weight = float(full_loss_weight)
-        if self.full_loss_weight < 0.0:
-            raise ValueError("full_loss_weight must be non-negative.")
+        self.increment_loss_weight = float(increment_loss_weight)
+        if self.increment_loss_weight < 0.0:
+            raise ValueError("increment_loss_weight must be non-negative.")
 
     @staticmethod
     def _stable_log_cosh(error: torch.Tensor) -> torch.Tensor:
@@ -121,8 +121,12 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
             predicted_displacement - scl_displacement
         ) / displacement_scale
         full_log_cosh = torch.mean(self._stable_log_cosh(full_error))
-        weighted_full = self.full_loss_weight * full_log_cosh
-        total_loss = increment_log_cosh + weighted_full
+        # The accumulated displacement is the primary fixed-point quantity.
+        # With TBPTT the gradient is deliberately detached at chunk boundaries,
+        # so the auxiliary increment term supplies local, well-conditioned
+        # training information without replacing the global response target.
+        weighted_increment = self.increment_loss_weight * increment_log_cosh
+        total_loss = full_log_cosh + weighted_increment
         if not return_metrics:
             return total_loss
 
@@ -139,7 +143,7 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
             metrics = {
                 "increment_log_cosh": increment_log_cosh.detach(),
                 "full_log_cosh": full_log_cosh.detach(),
-                "weighted_full_log_cosh": weighted_full.detach(),
+                "weighted_increment_log_cosh": weighted_increment.detach(),
                 "scl_increment_rmse_m": scl_increment_rmse,
                 "scl_displacement_rmse_m": scl_rmse,
                 "scl_displacement_correlation": scl_correlation,
