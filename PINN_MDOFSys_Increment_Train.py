@@ -40,6 +40,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument(
+        "--local-cumsum-loss-weight", type=float, default=0.05,
+        help="Weight of reset local cumulative equilibrium consistency.",
+    )
+    parser.add_argument(
+        "--local-cumsum-window", type=int, default=32,
+        help="Reset window in steps for local cumsum; must be 20--50.",
+    )
+    parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
     return parser.parse_args()
@@ -90,7 +98,11 @@ def main() -> None:
         fc_size=args.fc_size,
     ).double().to(device)
     modelLoss = PINN_MDOFSys_Increment_PhyLoss(
-        tensors["mass"], tensors["damping"], tensors["stiffness"]
+        tensors["mass"],
+        tensors["damping"],
+        tensors["stiffness"],
+        local_cumsum_loss_weight=args.local_cumsum_loss_weight,
+        local_cumsum_window=args.local_cumsum_window,
     ).double().to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
     lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -112,7 +124,10 @@ def main() -> None:
         "network_input": "elastic_displacement_increment_from_fixed_SCL",
         "network_output": "elastoplastic_displacement_increment",
         "kinematics": "second_order_central_difference",
-        "loss": "mean((du+diff(inv(K0)*(M*a+C*v+Rnl-Fwave)))^2)",
+        "loss": (
+            "MSE(du+dq) + local_cumsum_loss_weight*"
+            "MSE(local_cumsum(du+dq))"
+        ),
         "monitor": (
             "mean time-history correlation between accumulated predicted "
             "displacement and -inv(K0)*(M*a+C*v+Rnl-Fwave)"
@@ -125,6 +140,8 @@ def main() -> None:
         "n_dof": int(data.displacement.shape[2]),
         "delta_t": data.delta_t,
         "tbptt_length": args.tbptt_length,
+        "local_cumsum_loss_weight": args.local_cumsum_loss_weight,
+        "local_cumsum_window": args.local_cumsum_window,
     }
 
     print(
@@ -134,7 +151,8 @@ def main() -> None:
     print(
         "Increment PINN: elastic displacement increments -> LSTM -> "
         "elastoplastic displacement increments; loss = "
-        "MSE(du + diff(inv(K0)*(M*a + C*v + Rnl - Fwave))). "
+        "MSE(du + diff(inv(K0)*(M*a + C*v + Rnl - Fwave))) plus "
+        "reset local cumulative consistency. "
         "Full-displacement correlation is monitoring-only."
     )
     start_time = time.time()

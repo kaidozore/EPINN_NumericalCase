@@ -45,12 +45,12 @@ def parse_args() -> argparse.Namespace:
         help="Weight of the primary normalized increment MSE term.",
     )
     parser.add_argument(
-        "--anchor-loss-weight", type=float, default=0.002,
-        help="Weight of the sparse displacement-anchor MSE term.",
+        "--local-cumsum-loss-weight", type=float, default=0.05,
+        help="Weight of the reset local cumulative-trajectory MSE term.",
     )
     parser.add_argument(
-        "--anchor-stride", type=int, default=100,
-        help="Time-step spacing between displacement anchors.",
+        "--local-cumsum-window", type=int, default=32,
+        help="Reset window in steps for local cumsum; must be 20--50.",
     )
     parser.add_argument(
         "--labelled-samples", type=int, default=10,
@@ -64,8 +64,8 @@ def parse_args() -> argparse.Namespace:
         help="Weight of labelled displacement-increment MSE.",
     )
     parser.add_argument(
-        "--label-anchor-loss-weight", type=float, default=0.01,
-        help="Weight of labelled sparse full-displacement anchor MSE.",
+        "--label-local-cumsum-loss-weight", type=float, default=0.01,
+        help="Weight of labelled reset local cumulative-trajectory MSE.",
     )
     parser.add_argument(
         "--gradient-clip", type=float, default=1.0,
@@ -137,10 +137,12 @@ def main() -> None:
         increment_scale=config.displacement_increment_scale,
         displacement_scale=config.displacement_scale,
         increment_loss_weight=args.increment_loss_weight,
-        anchor_loss_weight=args.anchor_loss_weight,
-        anchor_stride=args.anchor_stride,
+        local_cumsum_loss_weight=args.local_cumsum_loss_weight,
+        local_cumsum_window=args.local_cumsum_window,
         label_increment_loss_weight=args.label_increment_loss_weight,
-        label_anchor_loss_weight=args.label_anchor_loss_weight,
+        label_local_cumsum_loss_weight=(
+            args.label_local_cumsum_loss_weight
+        ),
     ).double().to(device)
     optimizer = optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=5.0e-4
@@ -167,12 +169,12 @@ def main() -> None:
         "scl_target_detached": True,
         "loss": (
             "increment_loss_weight*MSE((LSTM_increment-SCL_increment)/"
-            "fixed_increment_scale) + anchor_loss_weight*MSE(" 
-            "(cumsum(LSTM_increment)[anchors]-SCL_displacement[anchors])/"
+            "fixed_increment_scale) + local_cumsum_loss_weight*MSE("
+            "local_cumsum(LSTM_increment-SCL_increment)/"
             "fixed_displacement_scale) + label_increment_loss_weight*"
             "MSE((LSTM_increment-labelled_increment)/fixed_increment_scale) "
-            "+ label_anchor_loss_weight*MSE((LSTM_displacement[anchors]-"
-            "labelled_displacement[anchors])/fixed_displacement_scale)"
+            "+ label_local_cumsum_loss_weight*MSE(local_cumsum("
+            "LSTM_increment-labelled_increment)/fixed_displacement_scale)"
         ),
         "input_increment_scale": float(config.displacement_increment_scale),
         "hidden_size": args.hidden_size,
@@ -185,11 +187,13 @@ def main() -> None:
         "increment_scale": float(config.displacement_increment_scale),
         "displacement_scale": float(config.displacement_scale),
         "increment_loss_weight": args.increment_loss_weight,
-        "anchor_loss_weight": args.anchor_loss_weight,
-        "anchor_stride": args.anchor_stride,
+        "local_cumsum_loss_weight": args.local_cumsum_loss_weight,
+        "local_cumsum_window": args.local_cumsum_window,
         "labelled_samples": args.labelled_samples,
         "label_increment_loss_weight": args.label_increment_loss_weight,
-        "label_anchor_loss_weight": args.label_anchor_loss_weight,
+        "label_local_cumsum_loss_weight": (
+            args.label_local_cumsum_loss_weight
+        ),
         "output_increment_scale": float(config.displacement_increment_scale),
         "output_head_init_gain": float(model.output_head_init_gain),
     }
@@ -244,7 +248,7 @@ def main() -> None:
     print(f"Training configuration: {configuration_path}")
     print(
         "E-PINN: elastic displacement increments -> LSTM -> nonlinear total "
-        "increments; sparse displacement anchors control long-term drift."
+        "increments; reset local cumsum windows constrain local trajectories."
     )
     start_time = time.time()
     for epoch in range(args.epochs):

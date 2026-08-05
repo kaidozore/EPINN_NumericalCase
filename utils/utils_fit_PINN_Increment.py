@@ -19,11 +19,11 @@ def _run_epoch(
     optimizer: torch.optim.Optimizer | None,
     tbptt_length: int | None,
     gradient_clip: float | None,
-) -> tuple[float, float]:
+) -> tuple[float, dict[str, float]]:
     training = optimizer is not None
     model.train(training)
     total = 0.0
-    full_displacement_correlation_total = 0.0
+    metric_totals: dict[str, float] = {}
     count = 0
     context = torch.enable_grad() if training else torch.no_grad()
     with context:
@@ -56,9 +56,10 @@ def _run_epoch(
                     (loss * chunk_fraction).backward()
                 weight = loads.shape[0] * (stop - start)
                 total += float(loss.detach()) * weight
-                full_displacement_correlation_total += (
-                    float(metrics["full_displacement_correlation"]) * weight
-                )
+                for name, value in metrics.items():
+                    metric_totals[name] = metric_totals.get(name, 0.0) + (
+                        float(value) * weight
+                    )
                 count += weight
             if training:
                 if gradient_clip is not None:
@@ -68,7 +69,9 @@ def _run_epoch(
                 optimizer.step()
     if count == 0:
         raise ValueError("The data loader did not produce any batches.")
-    return total / count, full_displacement_correlation_total / count
+    return total / count, {
+        name: value / count for name, value in metric_totals.items()
+    }
 
 
 def fitOneEpoch_PINN_Increment_PhyLoss(
@@ -88,14 +91,14 @@ def fitOneEpoch_PINN_Increment_PhyLoss(
     save_period: int = 1,
 ) -> tuple[float, float]:
     train_start = time.perf_counter()
-    train_loss, train_full_displacement_correlation = _run_epoch(
+    train_loss, train_metrics = _run_epoch(
         model, modelLoss, genTrain, device, optimizer,
         tbptt_length, gradient_clip,
     )
     train_time_seconds = time.perf_counter() - train_start
 
     validation_start = time.perf_counter()
-    val_loss, val_full_displacement_correlation = _run_epoch(
+    val_loss, val_metrics = _run_epoch(
         model, modelLoss, genVal, device, None, tbptt_length, None,
     )
     validation_time_seconds = time.perf_counter() - validation_start
@@ -110,20 +113,19 @@ def fitOneEpoch_PINN_Increment_PhyLoss(
             "train_time_seconds": train_time_seconds,
             "validation_time_seconds": validation_time_seconds,
             "epoch_compute_time_seconds": epoch_compute_time_seconds,
-            "train_full_displacement_correlation": (
-                train_full_displacement_correlation
-            ),
-            "val_full_displacement_correlation": (
-                val_full_displacement_correlation
-            ),
+            **{f"train_{name}": value for name, value in train_metrics.items()},
+            **{f"val_{name}": value for name, value in val_metrics.items()},
         },
     )
     print(
         f"Epoch {epoch + 1}/{endEpoch} - "
         f"loss: {train_loss:.6e} - val_loss: {val_loss:.6e} - "
         "full_dis_corr: "
-        f"{train_full_displacement_correlation:.4f}/"
-        f"{val_full_displacement_correlation:.4f} - "
+        f"{train_metrics['full_displacement_correlation']:.4f}/"
+        f"{val_metrics['full_displacement_correlation']:.4f} - "
+        "increment/local_cumsum: "
+        f"{train_metrics['increment_equilibrium_mse']:.3e}/"
+        f"{train_metrics['weighted_local_cumsum_mse']:.3e} - "
         f"lr: {get_lr(optimizer):.3e} - "
         f"time: {train_time_seconds:.2f}/{validation_time_seconds:.2f} s"
     )
@@ -140,12 +142,14 @@ def fitOneEpoch_PINN_Increment_PhyLoss(
                 "train_time_seconds": train_time_seconds,
                 "validation_time_seconds": validation_time_seconds,
                 "epoch_compute_time_seconds": epoch_compute_time_seconds,
-                "train_full_displacement_correlation": (
-                    train_full_displacement_correlation
-                ),
-                "val_full_displacement_correlation": (
-                    val_full_displacement_correlation
-                ),
+                **{
+                    f"train_{name}": value
+                    for name, value in train_metrics.items()
+                },
+                **{
+                    f"val_{name}": value
+                    for name, value in val_metrics.items()
+                },
             },
             epoch=epoch + 1,
             train_loss=train_loss,

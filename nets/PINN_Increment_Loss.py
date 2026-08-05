@@ -7,24 +7,51 @@ import torch.nn as nn
 
 
 class PINN_MDOFSys_Increment_PhyLoss(nn.Module):
-    """MSE of predicted increments plus equilibrium-derived increments."""
+    """Increment equilibrium MSE plus reset local cumulative consistency."""
 
     def __init__(
         self,
         mass: torch.Tensor,
         damping: torch.Tensor,
         stiffness: torch.Tensor,
+        local_cumsum_loss_weight: float = 0.05,
+        local_cumsum_window: int = 32,
     ) -> None:
         super().__init__()
         self.register_buffer("M", mass)
         self.register_buffer("C", damping)
         self.register_buffer("K_inv", torch.linalg.inv(stiffness))
+        self.local_cumsum_loss_weight = float(local_cumsum_loss_weight)
+        if self.local_cumsum_loss_weight < 0.0:
+            raise ValueError(
+                "local_cumsum_loss_weight must be non-negative."
+            )
+        self.local_cumsum_window = int(local_cumsum_window)
+        if not 20 <= self.local_cumsum_window <= 50:
+            raise ValueError(
+                "local_cumsum_window must be between 20 and 50 steps."
+            )
 
     @staticmethod
     def _matrix_product(
         matrix: torch.Tensor, response: torch.Tensor
     ) -> torch.Tensor:
         return torch.einsum("ij,btj->bti", matrix, response)
+
+    def _local_cumulative_mse(
+        self, increment_residual: torch.Tensor
+    ) -> torch.Tensor:
+        """Accumulate equilibrium errors inside independent short windows."""
+        window = self.local_cumsum_window
+        valid_length = (increment_residual.shape[1] // window) * window
+        if valid_length == 0:
+            local_residual = torch.cumsum(increment_residual, dim=1)
+        else:
+            trimmed = increment_residual[:, :valid_length]
+            batch, _, dof = trimmed.shape
+            blocks = trimmed.reshape(batch, -1, window, dof)
+            local_residual = torch.cumsum(blocks, dim=2)
+        return torch.mean(local_residual.pow(2))
 
     def forward(
         self,
@@ -70,7 +97,12 @@ class PINN_MDOFSys_Increment_PhyLoss(nn.Module):
         increment_residual = (
             prediction["dis_increment"] + equilibrium_increment
         )
-        loss = torch.mean(increment_residual.pow(2))
+        increment_mse = torch.mean(increment_residual.pow(2))
+        local_cumsum_mse = self._local_cumulative_mse(increment_residual)
+        weighted_local_cumsum_mse = (
+            self.local_cumsum_loss_weight * local_cumsum_mse
+        )
+        loss = increment_mse + weighted_local_cumsum_mse
         state = equilibrium_displacement[:, -1:].detach()
         if not return_metrics:
             if return_state:
@@ -105,6 +137,11 @@ class PINN_MDOFSys_Increment_PhyLoss(nn.Module):
         else:
             mean_full_displacement_correlation = loss.new_zeros(())
         metrics = {
+            "increment_equilibrium_mse": increment_mse.detach(),
+            "local_cumsum_mse": local_cumsum_mse.detach(),
+            "weighted_local_cumsum_mse": (
+                weighted_local_cumsum_mse.detach()
+            ),
             "full_displacement_correlation": (
                 mean_full_displacement_correlation.detach()
             )

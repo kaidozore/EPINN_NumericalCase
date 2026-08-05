@@ -146,9 +146,9 @@ def fitOneEpoch_EPINN_PhyLoss(
         components = []
         if "increment_mse" in train_metrics:
             components.append(
-                "increment/anchor: "
+                "increment/local_cumsum: "
                 f"{train_metrics['weighted_increment_mse']:.3e}/"
-                f"{train_metrics['weighted_anchor_mse']:.3e}"
+                f"{train_metrics['weighted_local_cumsum_mse']:.3e}"
             )
             components.append(
                 "scl_increment_rmse: "
@@ -156,12 +156,15 @@ def fitOneEpoch_EPINN_PhyLoss(
                 f"{val_metrics['scl_increment_rmse_m']:.3e} m"
             )
             components.append(
-                "label_increment/anchor: "
+                "label_increment/local_cumsum: "
                 f"{train_metrics['weighted_label_increment_mse']:.3e}/"
-                f"{train_metrics['weighted_label_anchor_mse']:.3e}"
+                f"{train_metrics['weighted_label_local_cumsum_mse']:.3e}"
             )
-        elif "anchor_mse" in train_metrics:
-            components.append(f"anchor_mse: {train_metrics['anchor_mse']:.3e}")
+        elif "local_cumsum_mse" in train_metrics:
+            components.append(
+                "local_cumsum_mse: "
+                f"{train_metrics['local_cumsum_mse']:.3e}"
+            )
         components.extend(
             [
                 "scl_rmse: "

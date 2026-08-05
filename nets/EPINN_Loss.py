@@ -1,4 +1,4 @@
-"""Increment-primary, block-anchor MSE loss for the increment-output E-PINN."""
+"""Increment-primary, local-cumulative MSE loss for increment E-PINN."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import torch.nn as nn
 
 
 class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
-    """Use local increment consistency with sparse full-displacement anchors."""
+    """Use increment consistency plus reset local cumulative trajectories."""
 
     reports_metrics = True
 
@@ -16,10 +16,10 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         increment_scale: float | torch.Tensor = 1.0,
         displacement_scale: float | torch.Tensor = 1.0,
         increment_loss_weight: float = 1.0,
-        anchor_loss_weight: float = 0.002,
-        anchor_stride: int = 100,
+        local_cumsum_loss_weight: float = 0.05,
+        local_cumsum_window: int = 32,
         label_increment_loss_weight: float = 0.2,
-        label_anchor_loss_weight: float = 0.01,
+        label_local_cumsum_loss_weight: float = 0.01,
     ) -> None:
         super().__init__()
         increment_scale = torch.as_tensor(increment_scale).reshape(-1)
@@ -42,28 +42,51 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         self.increment_loss_weight = float(increment_loss_weight)
         if self.increment_loss_weight < 0.0:
             raise ValueError("increment_loss_weight must be non-negative.")
-        self.anchor_loss_weight = float(anchor_loss_weight)
-        if self.anchor_loss_weight < 0.0:
-            raise ValueError("anchor_loss_weight must be non-negative.")
-        self.anchor_stride = int(anchor_stride)
-        if self.anchor_stride < 1:
-            raise ValueError("anchor_stride must be a positive integer.")
+        self.local_cumsum_loss_weight = float(local_cumsum_loss_weight)
+        if self.local_cumsum_loss_weight < 0.0:
+            raise ValueError(
+                "local_cumsum_loss_weight must be non-negative."
+            )
+        self.local_cumsum_window = int(local_cumsum_window)
+        if not 20 <= self.local_cumsum_window <= 50:
+            raise ValueError(
+                "local_cumsum_window must be between 20 and 50 steps."
+            )
         self.label_increment_loss_weight = float(
             label_increment_loss_weight
         )
-        self.label_anchor_loss_weight = float(label_anchor_loss_weight)
+        self.label_local_cumsum_loss_weight = float(
+            label_local_cumsum_loss_weight
+        )
         if self.label_increment_loss_weight < 0.0:
             raise ValueError(
                 "label_increment_loss_weight must be non-negative."
             )
-        if self.label_anchor_loss_weight < 0.0:
+        if self.label_local_cumsum_loss_weight < 0.0:
             raise ValueError(
-                "label_anchor_loss_weight must be non-negative."
+                "label_local_cumsum_loss_weight must be non-negative."
             )
 
     @staticmethod
     def _mse(error: torch.Tensor) -> torch.Tensor:
         return torch.mean(error.pow(2))
+
+    def _local_cumulative_mse(
+        self,
+        increment_error: torch.Tensor,
+        displacement_scale: torch.Tensor,
+    ) -> torch.Tensor:
+        """Accumulate only inside reset, non-overlapping short windows."""
+        window = self.local_cumsum_window
+        valid_length = (increment_error.shape[1] // window) * window
+        if valid_length == 0:
+            local_error = torch.cumsum(increment_error, dim=1)
+        else:
+            trimmed = increment_error[:, :valid_length]
+            batch, _, dof = trimmed.shape
+            blocks = trimmed.reshape(batch, -1, window, dof)
+            local_error = torch.cumsum(blocks, dim=2)
+        return self._mse(local_error / displacement_scale)
 
     @staticmethod
     def _mean_time_correlation(
@@ -136,28 +159,18 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         ) / increment_scale
         increment_mse = self._mse(increment_error)
 
-        # Use sparse displacement anchors instead of a full-sequence loss.
-        # This controls long-term drift while keeping the local increment term
-        # as the primary objective for the increment-output network.
-        anchor_indices = torch.arange(
-            0, predicted_displacement.shape[1], self.anchor_stride,
-            device=predicted_displacement.device,
+        # Reset cumsum at every short window.  This constrains local response
+        # trajectories without backpropagating through a full response history.
+        local_cumsum_mse = self._local_cumulative_mse(
+            predicted_increment - scl_increment,
+            displacement_scale,
         )
-        if anchor_indices[-1] != predicted_displacement.shape[1] - 1:
-            anchor_indices = torch.cat(
-                [anchor_indices, anchor_indices.new_tensor(
-                    [predicted_displacement.shape[1] - 1]
-                )]
-            )
-        anchor_error = (
-            predicted_displacement[:, anchor_indices]
-            - scl_displacement[:, anchor_indices]
-        ) / displacement_scale
-        anchor_mse = self._mse(anchor_error)
         weighted_increment = self.increment_loss_weight * increment_mse
-        weighted_anchor = self.anchor_loss_weight * anchor_mse
+        weighted_local_cumsum = (
+            self.local_cumsum_loss_weight * local_cumsum_mse
+        )
         label_increment_mse = predicted_increment.new_zeros(())
-        label_anchor_mse = predicted_increment.new_zeros(())
+        label_local_cumsum_mse = predicted_increment.new_zeros(())
         labelled_fraction = predicted_increment.new_zeros(())
         if (
             target is not None
@@ -185,23 +198,24 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
                     - true_increment[labelled]
                 ) / increment_scale
                 label_increment_mse = self._mse(label_increment_error)
-                label_anchor_error = (
-                    predicted_displacement[labelled][:, anchor_indices]
-                    - true_displacement[labelled][:, anchor_indices]
-                ) / displacement_scale
-                label_anchor_mse = self._mse(label_anchor_error)
+                label_local_cumsum_mse = self._local_cumulative_mse(
+                    predicted_increment[labelled]
+                    - true_increment[labelled],
+                    displacement_scale,
+                )
 
         weighted_label_increment = (
             self.label_increment_loss_weight * label_increment_mse
         )
-        weighted_label_anchor = (
-            self.label_anchor_loss_weight * label_anchor_mse
+        weighted_label_local_cumsum = (
+            self.label_local_cumsum_loss_weight
+            * label_local_cumsum_mse
         )
         total_loss = (
             weighted_increment
-            + weighted_anchor
+            + weighted_local_cumsum
             + weighted_label_increment
-            + weighted_label_anchor
+            + weighted_label_local_cumsum
         )
         if not return_metrics:
             return total_loss
@@ -218,15 +232,21 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
             )
             metrics = {
                 "increment_mse": increment_mse.detach(),
-                "anchor_mse": anchor_mse.detach(),
+                "local_cumsum_mse": local_cumsum_mse.detach(),
                 "weighted_increment_mse": weighted_increment.detach(),
-                "weighted_anchor_mse": weighted_anchor.detach(),
+                "weighted_local_cumsum_mse": (
+                    weighted_local_cumsum.detach()
+                ),
                 "label_increment_mse": label_increment_mse.detach(),
-                "label_anchor_mse": label_anchor_mse.detach(),
+                "label_local_cumsum_mse": (
+                    label_local_cumsum_mse.detach()
+                ),
                 "weighted_label_increment_mse": (
                     weighted_label_increment.detach()
                 ),
-                "weighted_label_anchor_mse": weighted_label_anchor.detach(),
+                "weighted_label_local_cumsum_mse": (
+                    weighted_label_local_cumsum.detach()
+                ),
                 "labelled_fraction": labelled_fraction.detach(),
                 "scl_increment_rmse_m": scl_increment_rmse,
                 "scl_displacement_rmse_m": scl_rmse,
