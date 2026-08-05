@@ -138,9 +138,9 @@ def main() -> None:
         "network_input": "elastic_displacement_increment_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_increment",
         "loss": (
-            "LogCosh((cumsum(LSTM_increment)-SCL_displacement)/"
+            "MSE((cumsum(LSTM_increment)-SCL_displacement)/"
             "fixed_displacement_scale) + increment_loss_weight*"
-            "LogCosh((LSTM_increment-SCL_increment)/"
+            "MSE((LSTM_increment-SCL_increment)/"
             "fixed_increment_scale)"
         ),
         "input_increment_scale": float(config.displacement_increment_scale),

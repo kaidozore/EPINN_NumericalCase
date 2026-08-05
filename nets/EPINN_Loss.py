@@ -1,12 +1,9 @@
-"""Full-response-first fixed-point loss for the increment-output E-PINN."""
+"""Full-response-first MSE loss for the increment-output E-PINN."""
 
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
@@ -43,9 +40,8 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
             raise ValueError("increment_loss_weight must be non-negative.")
 
     @staticmethod
-    def _stable_log_cosh(error: torch.Tensor) -> torch.Tensor:
-        absolute = torch.abs(error)
-        return absolute + F.softplus(-2.0 * absolute) - math.log(2.0)
+    def _mse(error: torch.Tensor) -> torch.Tensor:
+        return torch.mean(error.pow(2))
 
     @staticmethod
     def _mean_time_correlation(
@@ -113,20 +109,18 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         increment_error = (
             predicted_increment - scl_increment
         ) / increment_scale
-        increment_log_cosh = torch.mean(
-            self._stable_log_cosh(increment_error)
-        )
+        increment_mse = self._mse(increment_error)
 
         full_error = (
             predicted_displacement - scl_displacement
         ) / displacement_scale
-        full_log_cosh = torch.mean(self._stable_log_cosh(full_error))
+        full_mse = self._mse(full_error)
         # The accumulated displacement is the primary fixed-point quantity.
         # With TBPTT the gradient is deliberately detached at chunk boundaries,
         # so the auxiliary increment term supplies local, well-conditioned
         # training information without replacing the global response target.
-        weighted_increment = self.increment_loss_weight * increment_log_cosh
-        total_loss = full_log_cosh + weighted_increment
+        weighted_increment = self.increment_loss_weight * increment_mse
+        total_loss = full_mse + weighted_increment
         if not return_metrics:
             return total_loss
 
@@ -141,9 +135,9 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
                 predicted_displacement, scl_displacement
             )
             metrics = {
-                "increment_log_cosh": increment_log_cosh.detach(),
-                "full_log_cosh": full_log_cosh.detach(),
-                "weighted_increment_log_cosh": weighted_increment.detach(),
+                "increment_mse": increment_mse.detach(),
+                "full_mse": full_mse.detach(),
+                "weighted_increment_mse": weighted_increment.detach(),
                 "scl_increment_rmse_m": scl_increment_rmse,
                 "scl_displacement_rmse_m": scl_rmse,
                 "scl_displacement_correlation": scl_correlation,
