@@ -118,6 +118,14 @@ def main() -> None:
     checkpoint_data = {
         "method": "EPINN_FULL",
         "case_config": config.to_dict(),
+        "data_split": {
+            "train_indices": split.train.tolist(),
+            "validation_indices": split.validation.tolist(),
+            "test_indices": split.test.tolist(),
+            "priority_nonlinear_indices": (
+                split.priority_nonlinear.tolist()
+            ),
+        },
         "network_input": "elastic_total_displacement_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement",
         "scl_target_detached": True,
@@ -149,6 +157,9 @@ def main() -> None:
                 "train_indices": split.train.tolist(),
                 "validation_indices": split.validation.tolist(),
                 "test_indices": split.test.tolist(),
+                "priority_nonlinear_indices": (
+                    split.priority_nonlinear.tolist()
+                ),
             },
             "model_and_loss": checkpoint_data,
             "optimizer": {
@@ -177,6 +188,10 @@ def main() -> None:
         f"{len(split.train)}/{len(split.validation)}/{len(split.test)}"
     )
     print(f"Training configuration: {configuration_path}")
+    print(
+        "Priority nonlinear training samples (MATLAB indices): "
+        f"{(split.priority_nonlinear + 1).tolist()}"
+    )
     print(
         "Full E-PINN: elastic total displacement -> LSTM -> nonlinear total "
         "displacement; loss = MSE(LSTM displacement - SCL displacement)."

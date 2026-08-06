@@ -164,6 +164,15 @@ def main() -> None:
     checkpoint_data = {
         "method": "EPINN",
         "case_config": config.to_dict(),
+        "data_split": {
+            "train_indices": split.train.tolist(),
+            "validation_indices": split.validation.tolist(),
+            "test_indices": split.test.tolist(),
+            "labelled_train_indices": split.labelled.tolist(),
+            "priority_nonlinear_indices": (
+                split.priority_nonlinear.tolist()
+            ),
+        },
         "network_input": "elastic_displacement_increment_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_increment",
         "scl_target_detached": True,
@@ -214,6 +223,9 @@ def main() -> None:
                 "validation_indices": split.validation.tolist(),
                 "test_indices": split.test.tolist(),
                 "labelled_train_indices": split.labelled.tolist(),
+                "priority_nonlinear_indices": (
+                    split.priority_nonlinear.tolist()
+                ),
             },
             "model_and_loss": checkpoint_data,
             "optimizer": {
@@ -244,6 +256,10 @@ def main() -> None:
     print(
         f"Labelled training samples: {len(split.labelled)}; "
         f"indices = {split.labelled.tolist()}"
+    )
+    print(
+        "Priority nonlinear training samples (MATLAB indices): "
+        f"{(split.priority_nonlinear + 1).tolist()}"
     )
     print(f"Training configuration: {configuration_path}")
     print(

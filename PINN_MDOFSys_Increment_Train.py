@@ -121,6 +121,14 @@ def main() -> None:
     checkpoint_data = {
         "method": "PINN_INCREMENT",
         "case_config": config.to_dict(),
+        "data_split": {
+            "train_indices": split.train.tolist(),
+            "validation_indices": split.validation.tolist(),
+            "test_indices": split.test.tolist(),
+            "priority_nonlinear_indices": (
+                split.priority_nonlinear.tolist()
+            ),
+        },
         "network_input": "elastic_displacement_increment_from_fixed_SCL",
         "network_output": "elastoplastic_displacement_increment",
         "kinematics": "second_order_central_difference",
@@ -147,6 +155,10 @@ def main() -> None:
     print(
         f"Device: {device}; train/validation/test = "
         f"{len(split.train)}/{len(split.validation)}/{len(split.test)}"
+    )
+    print(
+        "Priority nonlinear training samples (MATLAB indices): "
+        f"{(split.priority_nonlinear + 1).tolist()}"
     )
     print(
         "Increment PINN: elastic displacement increments -> LSTM -> "

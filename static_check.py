@@ -19,6 +19,7 @@ from nets.EPINN_Net import EPINN_PhyLSTM_NetBody
 from nets.PINN_Loss import PINN_MDOFSys_DisIncrement_PhyLoss
 from nets.PINN_Net import PINN_PhyLSTM3_DisIncrement_NetBody
 from utils.DataPreProcess import (
+    _maximum_ductility_scores,
     as_torch_case,
     build_data_split,
     load_case_data,
@@ -54,6 +55,29 @@ def main() -> None:
     )
     data = load_case_data(config)
     split = build_data_split(config, data.load.shape[0])
+    if data.load.shape[0] >= 300:
+        if not (
+            split.train.size == 170
+            and split.validation.size == 30
+            and split.test.size == 100
+            and split.priority_nonlinear.size == 10
+        ):
+            raise AssertionError("The prioritized 170/30/100 split is invalid.")
+        if not np.all(np.isin(split.priority_nonlinear, split.train)):
+            raise AssertionError("A priority nonlinear sample left training.")
+        ductility = _maximum_ductility_scores(config, data.load.shape[0])
+        expected_priority = np.argsort(
+            -ductility, kind="stable"
+        )[: split.priority_nonlinear.size]
+        if not np.array_equal(
+            np.sort(expected_priority), split.priority_nonlinear
+        ):
+            raise AssertionError("The strongest nonlinear samples were missed.")
+        print(
+            "[PASS] Prioritized split: strongest nonlinear MATLAB samples "
+            f"{(split.priority_nonlinear + 1).tolist()} are in training; "
+            "train/validation/test=170/30/100."
+        )
     device = torch.device("cpu")
     tensors = as_torch_case(data, device)
     n_dof = data.load.shape[2]

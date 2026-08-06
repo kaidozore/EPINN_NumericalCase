@@ -113,6 +113,15 @@ def main() -> None:
     checkpoint_data = {
         "method": "PINN",
         "case_config": config.to_dict(),
+        "data_split": {
+            "train_indices": split.train.tolist(),
+            "validation_indices": split.validation.tolist(),
+            "test_indices": split.test.tolist(),
+            "labelled_train_indices": split.labelled.tolist(),
+            "priority_nonlinear_indices": (
+                split.priority_nonlinear.tolist()
+            ),
+        },
         "network_input": "elastic_displacement_history_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_history",
         "kinematics": "second_order_central_difference",
@@ -138,6 +147,10 @@ def main() -> None:
         f"Device: {device}; train/validation/test = "
         f"{len(split.train)}/{len(split.validation)}/{len(split.test)}; "
         f"labelled training samples = {len(split.labelled)}"
+    )
+    print(
+        "Priority nonlinear training samples (MATLAB indices): "
+        f"{(split.priority_nonlinear + 1).tolist()}"
     )
     print(
         "PINN: elastic displacement history -> LSTM -> nonlinear total "

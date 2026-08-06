@@ -15,6 +15,7 @@ class CaseConfig:
     random_seed: int = 20260730
     model_sample_count: int = 200
     train_sample_count: int = 170
+    priority_nonlinear_sample_count: int = 10
     labelled_sample_count: int = 40
     time_truncation: int = 600
     sequence_length: int | None = None

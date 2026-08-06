@@ -43,6 +43,7 @@ class DataSplit:
     validation: np.ndarray
     test: np.ndarray
     labelled: np.ndarray
+    priority_nonlinear: np.ndarray
 
 
 def _scalar(group: h5py.Group, name: str) -> float:
@@ -173,30 +174,83 @@ def load_case_data(config: CaseConfig) -> CaseData:
     )
 
 
+def _maximum_ductility_scores(
+    config: CaseConfig, n_sample: int
+) -> np.ndarray:
+    """Read each sample's maximum Steel02 ductility demand from MATLAB."""
+    with h5py.File(config.response_file, "r") as mat:
+        if "maxFiberStrain" not in mat or "yieldSummary" not in mat:
+            raise KeyError(
+                "The MATLAB response file lacks fiber-yield diagnostics."
+            )
+        maximum_fiber_strain = np.asarray(
+            mat["maxFiberStrain"][:n_sample], dtype=np.float64
+        )
+        yield_strain = _scalar(mat["yieldSummary"], "yieldStrain")
+    if maximum_fiber_strain.shape[0] != n_sample:
+        raise ValueError("maxFiberStrain has an inconsistent sample count.")
+    if yield_strain <= 0.0:
+        raise ValueError("The Steel02 yield strain must be positive.")
+    return np.max(np.abs(maximum_fiber_strain), axis=1) / yield_strain
+
+
 def build_data_split(config: CaseConfig, n_sample: int) -> DataSplit:
-    """Use the paper split for 300 samples and a safe split for smoke tests."""
+    """Prioritize the strongest nonlinear samples, then split reproducibly."""
 
     if n_sample < 2:
         raise ValueError("At least two samples are required for train/validation.")
+    generator = np.random.default_rng(config.random_seed)
     if n_sample >= config.model_sample_count:
         model_count = config.model_sample_count
         train_count = config.train_sample_count
-        test = np.arange(model_count, n_sample, dtype=np.int64)
+        validation_count = model_count - train_count
+        if not 0 < train_count < model_count <= n_sample:
+            raise ValueError("The configured production split is invalid.")
+        priority_count = min(
+            int(config.priority_nonlinear_sample_count), train_count
+        )
+        ductility = _maximum_ductility_scores(config, n_sample)
+        priority_nonlinear = np.argsort(
+            -ductility, kind="stable"
+        )[:priority_count].astype(np.int64)
+        remaining = np.setdiff1d(
+            np.arange(n_sample, dtype=np.int64),
+            priority_nonlinear,
+            assume_unique=True,
+        )
+        remaining = generator.permutation(remaining)
+        additional_train_count = train_count - priority_count
+        train = np.sort(
+            np.concatenate(
+                [
+                    priority_nonlinear,
+                    remaining[:additional_train_count],
+                ]
+            )
+        )
+        validation_start = additional_train_count
+        validation_stop = validation_start + validation_count
+        validation = np.sort(
+            remaining[validation_start:validation_stop]
+        )
+        test = np.sort(remaining[validation_stop:])
     else:
         # Keep one independent test sample so a complete train/predict smoke
         # test is possible before the 300-sample production data are ready.
         model_count = n_sample - 1
         train_count = max(1, min(model_count - 1, round(0.85 * model_count)))
         test = np.arange(model_count, n_sample, dtype=np.int64)
-    generator = np.random.default_rng(config.random_seed)
-    model_pool = generator.permutation(model_count)
-    train = np.sort(model_pool[:train_count])
-    validation = np.sort(model_pool[train_count:])
+        model_pool = generator.permutation(model_count)
+        train = np.sort(model_pool[:train_count])
+        validation = np.sort(model_pool[train_count:])
+        priority_nonlinear = np.empty(0, dtype=np.int64)
     labelled_count = min(config.labelled_sample_count, train.size)
     labelled = np.sort(
         generator.choice(train, size=labelled_count, replace=False)
     )
-    return DataSplit(train, validation, test, labelled)
+    return DataSplit(
+        train, validation, test, labelled, np.sort(priority_nonlinear)
+    )
 
 
 def load_scale_from_training(
