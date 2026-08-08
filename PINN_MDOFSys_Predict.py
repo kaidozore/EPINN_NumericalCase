@@ -67,9 +67,9 @@ def main() -> None:
             ),
             dtype=torch.float64,
         ),
-        input_displacement_scale=torch.as_tensor(
+        input_force_scale=torch.as_tensor(
             checkpoint.get(
-                "input_displacement_scale", config.displacement_scale
+                "input_force_scale", config.force_scale
             ),
             dtype=torch.float64,
         ),

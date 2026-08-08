@@ -15,7 +15,7 @@ from nets.common import (
 
 
 class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
-    """Predict the nonlinear total displacement from the elastic history."""
+    """Predict the nonlinear total displacement from the wave-load history."""
 
     def __init__(
         self,
@@ -27,7 +27,7 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         fiber: dict[str, torch.Tensor],
         steel: dict[str, float],
         input_increment_scale: float | torch.Tensor = 1.0e-1,
-        input_displacement_scale: float | torch.Tensor = 5.0e-1,
+        input_force_scale: float | torch.Tensor = 1.0e4,
         output_displacement_scale: float | torch.Tensor = 5.0e-1,
         hidden_size: int = 240,
         fc_size: int = 240,
@@ -36,24 +36,24 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         self.nLoad = nLoad
         self.nDOF = nDOF
         self.delta_t = float(delta_t)
-        def displacement_scale(value, name):
+        def fixed_scale(value, size, name):
             scale = torch.as_tensor(
                 value, dtype=stiffness.dtype, device=stiffness.device
             ).reshape(-1)
             if scale.numel() == 1:
-                scale = scale.expand(nDOF).clone()
-            if scale.numel() != nDOF or torch.any(scale <= 0.0):
-                raise ValueError(f"{name} must contain positive DOF scales.")
-            return scale.reshape(1, 1, nDOF)
+                scale = scale.expand(size).clone()
+            if scale.numel() != size or torch.any(scale <= 0.0):
+                raise ValueError(f"{name} must contain {size} positive scales.")
+            return scale.reshape(1, 1, size)
 
         self.register_buffer(
-            "input_displacement_scale",
-            displacement_scale(input_displacement_scale, "input_displacement_scale"),
+            "input_force_scale",
+            fixed_scale(input_force_scale, nLoad, "input_force_scale"),
         )
         self.register_buffer(
             "output_displacement_scale",
-            displacement_scale(
-                output_displacement_scale, "output_displacement_scale"
+            fixed_scale(
+                output_displacement_scale, nDOF, "output_displacement_scale"
             ),
         )
         self.ElasticInput_Module = ElasticIncrementInput(
@@ -76,7 +76,7 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         _, elastic_increment, elastic_displacement = (
             self.ElasticInput_Module(load_sequence)
         )
-        network_input = elastic_displacement / self.input_displacement_scale
+        network_input = load_sequence / self.input_force_scale
         displacement = force_initial_zero(
             self.LSTM_Module(network_input) * self.output_displacement_scale
         )
@@ -114,7 +114,7 @@ class PINN_PhyLSTM3_DisIncrement_NetBody(nn.Module):
         ) = self.ElasticInput_Module.forward_chunk(
             load_sequence, elastic_state
         )
-        network_input = elastic_displacement / self.input_displacement_scale
+        network_input = load_sequence / self.input_force_scale
         lstm_state = None if state is None else state["lstm"]
         displacement, lstm_state = self.LSTM_Module(
             network_input, lstm_state, True

@@ -89,7 +89,7 @@ def main() -> None:
         fiber=tensors["fiber"],
         steel=tensors["steel"],
         input_increment_scale=config.displacement_increment_scale,
-        input_displacement_scale=config.displacement_scale,
+        input_force_scale=config.force_scale,
         output_displacement_scale=config.displacement_scale,
         hidden_size=args.hidden_size,
         fc_size=args.fc_size,
@@ -122,7 +122,7 @@ def main() -> None:
                 split.priority_nonlinear.tolist()
             ),
         },
-        "network_input": "elastic_displacement_history_from_fixed_SCL",
+        "network_input": "wave_load_history_in_newtons",
         "network_output": "nonlinear_total_displacement_history",
         "kinematics": "second_order_central_difference",
         "loss": (
@@ -133,7 +133,7 @@ def main() -> None:
         "label_weight": args.label_weight,
         "labelled_indices": split.labelled.tolist(),
         "input_increment_scale": float(config.displacement_increment_scale),
-        "input_displacement_scale": float(config.displacement_scale),
+        "input_force_scale": float(config.force_scale),
         "output_displacement_scale": float(config.displacement_scale),
         "hidden_size": args.hidden_size,
         "fc_size": args.fc_size,
@@ -153,7 +153,7 @@ def main() -> None:
         f"{(split.priority_nonlinear + 1).tolist()}"
     )
     print(
-        "PINN: elastic displacement history -> LSTM -> nonlinear total "
+        "PINN: wave-load history -> LSTM -> nonlinear total "
         "displacement history; loss = "
         "physics_MSE + label_weight*MSE(u - u_MATLAB)."
         " Displacement-history correlation is logged but not optimized."

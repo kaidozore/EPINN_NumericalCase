@@ -230,11 +230,26 @@ def main() -> None:
     pinn = PINN_PhyLSTM3_DisIncrement_NetBody(
         nDOF=n_dof,
         delta_t=data.delta_t,
-        input_displacement_scale=config.displacement_scale,
+        input_force_scale=config.force_scale,
         output_displacement_scale=config.displacement_scale,
         **common,
     ).double()
+    captured_pinn_input = []
+    hook = pinn.LSTM_Module.register_forward_pre_hook(
+        lambda _module, args: captured_pinn_input.append(args[0].detach().clone())
+    )
     pinn_prediction = pinn(load)
+    hook.remove()
+    expected_pinn_input = load.squeeze(1).transpose(1, 2) / config.force_scale
+    pinn_input_error = torch.max(
+        torch.abs(captured_pinn_input[0] - expected_pinn_input)
+    ).item()
+    if pinn_input_error > 1.0e-12:
+        raise AssertionError("Full PINN LSTM input is not the scaled wave load.")
+    print(
+        "[PASS] Full PINN LSTM input is the fixed-scale wave load; "
+        f"max error={pinn_input_error:.3e}."
+    )
     pinn_loss = PINN_MDOFSys_DisIncrement_PhyLoss(
         tensors["mass"], tensors["damping"], tensors["stiffness"]
     )(load, pinn_prediction)
