@@ -40,8 +40,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument(
+        "--labelled-samples", type=int, default=40,
+        help=(
+            "Number of training samples carrying MATLAB displacement labels; "
+            "use 0 for physics-only training."
+        ),
+    )
+    parser.add_argument(
         "--label-weight", type=float, default=0.1,
-        help="Weight of displacement MSE on 40 labelled training samples.",
+        help="Weight of displacement MSE on the labelled training samples.",
     )
     parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
@@ -56,6 +63,7 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         sequence_length=args.sequence_length,
+        labelled_sample_count=args.labelled_samples,
     )
     seed_everything(config.random_seed)
     device = torch.device(args.device)
@@ -131,6 +139,7 @@ def main() -> None:
         ),
         "label_loss": "mean((u_prediction-u_MATLAB)^2)",
         "label_weight": args.label_weight,
+        "labelled_samples": args.labelled_samples,
         "labelled_indices": split.labelled.tolist(),
         "input_increment_scale": float(config.displacement_increment_scale),
         "input_force_scale": float(config.force_scale),
