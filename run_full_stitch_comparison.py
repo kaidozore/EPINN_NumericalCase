@@ -15,10 +15,12 @@ def main():
     parser.add_argument('--data-root', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--retry-failed', action='store_true',
+                        help='Retry only failed training jobs, preserving completed results.')
     args = parser.parse_args()
     root = Path(__file__).resolve().parent
     output = args.output_dir.resolve()
-    output.mkdir(parents=True, exist_ok=False)
+    output.mkdir(parents=True, exist_ok=args.retry_failed)
     variants = ('transformer-hidden', 'lstm-explicit-overlap', 'transformer-explicit-overlap')
     shared = ['--data-root', str(args.data_root.resolve()), '--epochs', str(args.epochs),
               '--batch-size', '10', '--hidden-size', '120', '--fc-size', '120',
@@ -33,6 +35,15 @@ def main():
     state = {'created': datetime.now().isoformat(), 'pid': os.getpid(),
              'git_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(),
              'shared_arguments': shared, 'experiments': {v: {'status': 'queued'} for v in variants}}
+    if args.retry_failed:
+        prior = json.loads((output / 'status.json').read_text(encoding='utf-8'))
+        if prior['shared_arguments'] != shared:
+            raise ValueError('Retry must keep the original experiment arguments.')
+        prior['retry_git_commit'] = state['git_commit']
+        prior['pid'] = os.getpid()
+        state = prior
+        state.pop('finished', None)
+        variants = tuple(v for v in variants if state['experiments'][v]['status'] == 'training_failed')
 
     def save():
         temporary = output / 'status.tmp.json'
@@ -42,12 +53,14 @@ def main():
     save()
     for variant in variants:
         item = state['experiments'][variant]
+        if args.retry_failed:
+            state.setdefault('previous_attempts', []).append({'variant': variant, **item})
         command = [sys.executable, '-u', str(root / 'EPINN_MDOFSys_Full_Train.py'), *shared,
                    '--sequence-variant', variant]
         item.update(status='training', command=command, started=datetime.now().isoformat())
         log_root = root / 'logs' / ('EPINN_Full_' + variant.replace('-', '_', 1))
         before = set(log_root.glob('loss_*'))
-        with (output / (variant + '.log')).open('w', encoding='utf-8') as stream:
+        with (output / (variant + '.log')).open('a' if args.retry_failed else 'w', encoding='utf-8') as stream:
             process = subprocess.Popen(command, cwd=root, env=env, stdout=stream, stderr=subprocess.STDOUT)
             item['pid'] = process.pid
             save()

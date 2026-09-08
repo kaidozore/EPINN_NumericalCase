@@ -98,16 +98,26 @@ class CausalTransformer_FC_Module(nn.Module):
         )
         memory = None if state is None else state.get("memory")
         combined = current if memory is None else torch.cat((memory, current), dim=1)
+        # Some CUDA/cuBLAS float64 attention kernels fail for odd sequence
+        # strides (e.g. the 1001-token explicit-boundary sequence). Append
+        # future tokens for alignment; causal masking makes them invisible
+        # to all real queries. Never retain padding in outputs or memory.
+        attention_input = combined
+        if combined.is_cuda and combined.shape[1] % 8:
+            attention_input = nn_fun.pad(
+                combined, (0, 0, 0, (-combined.shape[1]) % 8)
+            )
         causal_mask = torch.triu(
             torch.ones(
-                combined.shape[1],
-                combined.shape[1],
+                attention_input.shape[1],
+                attention_input.shape[1],
                 dtype=torch.bool,
                 device=combined.device,
             ),
             diagonal=1,
         )
-        encoded = self.Encoder(combined, mask=causal_mask)
+        encoded = self.Encoder(attention_input, mask=causal_mask)
+        encoded = encoded[:, :combined.shape[1]]
         encoded = encoded[:, -current.shape[1] :]
         output = self.FC2(self.Relu(self.FC1(encoded)))
         if not return_state:
