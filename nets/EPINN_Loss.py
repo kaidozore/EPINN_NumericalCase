@@ -20,6 +20,7 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         local_cumsum_window: int = 32,
         label_increment_loss_weight: float = 0.2,
         label_local_cumsum_loss_weight: float = 0.01,
+        continuity_loss_weight: float = 1.0,
     ) -> None:
         super().__init__()
         increment_scale = torch.as_tensor(increment_scale).reshape(-1)
@@ -58,6 +59,9 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
         self.label_local_cumsum_loss_weight = float(
             label_local_cumsum_loss_weight
         )
+        self.continuity_loss_weight = float(continuity_loss_weight)
+        if self.continuity_loss_weight < 0.0:
+            raise ValueError("continuity_loss_weight must be non-negative.")
         if self.label_increment_loss_weight < 0.0:
             raise ValueError(
                 "label_increment_loss_weight must be non-negative."
@@ -211,11 +215,22 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
             self.label_local_cumsum_loss_weight
             * label_local_cumsum_mse
         )
+        continuity_mse = predicted_increment.new_zeros(())
+        if "boundary_prediction" in prediction:
+            boundary_error = (
+                prediction["boundary_prediction"]
+                - prediction["boundary_initial"].detach()
+            ) / displacement_scale
+            continuity_mse = self._mse(boundary_error)
+        weighted_continuity = (
+            self.continuity_loss_weight * continuity_mse
+        )
         total_loss = (
             weighted_increment
             + weighted_local_cumsum
             + weighted_label_increment
             + weighted_label_local_cumsum
+            + weighted_continuity
         )
         if not return_metrics:
             return total_loss
@@ -248,6 +263,8 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
                     weighted_label_local_cumsum.detach()
                 ),
                 "labelled_fraction": labelled_fraction.detach(),
+                "continuity_mse": continuity_mse.detach(),
+                "weighted_continuity_mse": weighted_continuity.detach(),
                 "scl_increment_rmse_m": scl_increment_rmse,
                 "scl_displacement_rmse_m": scl_rmse,
                 "scl_displacement_correlation": scl_correlation,

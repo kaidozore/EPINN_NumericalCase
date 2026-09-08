@@ -11,6 +11,15 @@ class EPINN_MDOFSys_FullDis_PhyLoss(nn.Module):
 
     reports_metrics = True
 
+    def __init__(self, continuity_loss_weight: float = 1.0, label_weight: float = 0.1) -> None:
+        super().__init__()
+        self.label_weight = float(label_weight)
+        if self.label_weight < 0.0:
+            raise ValueError("label_weight must be non-negative.")
+        self.continuity_loss_weight = float(continuity_loss_weight)
+        if self.continuity_loss_weight < 0.0:
+            raise ValueError("continuity_loss_weight must be non-negative.")
+
     @staticmethod
     def _mean_time_correlation(
         prediction: torch.Tensor,
@@ -49,13 +58,34 @@ class EPINN_MDOFSys_FullDis_PhyLoss(nn.Module):
         # same backward pass as the LSTM prediction.
         scl_displacement = prediction["dis"].detach()
         scl_error = predicted_displacement - scl_displacement
-        loss = torch.mean(scl_error.pow(2))
+        full_mse = torch.mean(scl_error.pow(2))
+        continuity_mse = predicted_displacement.new_zeros(())
+        if "boundary_prediction" in prediction:
+            continuity_mse = torch.mean(
+                (
+                    prediction["boundary_prediction"]
+                    - prediction["boundary_initial"].detach()
+                ).pow(2)
+            )
+        weighted_continuity = (
+            self.continuity_loss_weight * continuity_mse
+        )
+        label_mse = predicted_displacement.new_zeros(())
+        if target is not None and "labelled" in target:
+            labelled = target["labelled"].to(device=predicted_displacement.device, dtype=torch.bool).reshape(-1)
+            if torch.any(labelled):
+                label_mse = (predicted_displacement[labelled] - target["dis"][labelled]).square().mean()
+        loss = full_mse + weighted_continuity + self.label_weight * label_mse
         if not return_metrics:
             return loss
 
         with torch.no_grad():
             metrics = {
-                "full_mse": loss.detach(),
+                "full_mse": full_mse.detach(),
+                "label_mse": label_mse.detach(),
+                "weighted_label_mse": (self.label_weight * label_mse).detach(),
+                "continuity_mse": continuity_mse.detach(),
+                "weighted_continuity_mse": weighted_continuity.detach(),
                 "scl_displacement_rmse_m": torch.sqrt(
                     torch.mean(scl_error.pow(2))
                 ),

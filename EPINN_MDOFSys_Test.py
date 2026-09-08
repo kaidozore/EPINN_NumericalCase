@@ -30,6 +30,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--variant", choices=("increment", "full"), required=True
     )
+    parser.add_argument(
+        "--sequence-variant",
+        choices=(
+            "lstm-hidden",
+            "transformer-hidden",
+            "lstm-explicit-overlap",
+            "transformer-explicit-overlap",
+        ),
+        default=None,
+    )
+    parser.add_argument(
+        "--sequence-model", choices=("lstm", "transformer"), default=None,
+        help="Select the latest run of this temporal model.",
+    )
+    parser.add_argument(
+        "--stitch-mode", choices=("hidden", "explicit-overlap"),
+        default=None,
+        help="Select the latest run of this stitching mode.",
+    )
     parser.add_argument("--data-root", type=Path, default=default_root)
     parser.add_argument(
         "--run-dir", type=Path, default=None,
@@ -48,11 +67,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.sequence_variant is not None:
+        mapping = {
+            "lstm-hidden": ("lstm", "hidden"),
+            "transformer-hidden": ("transformer", "hidden"),
+            "lstm-explicit-overlap": ("lstm", "explicit-overlap"),
+            "transformer-explicit-overlap": (
+                "transformer", "explicit-overlap"
+            ),
+        }
+        args.sequence_model, args.stitch_mode = mapping[
+            args.sequence_variant
+        ]
+    return args
 
 
-def _latest_run_directory(variant: str) -> Path:
-    log_name = "EPINN_PhyLSTM" if variant == "increment" else "EPINN_Full_PhyLSTM"
+def _latest_run_directory(
+    variant: str,
+    sequence_model: str | None,
+    stitch_mode: str | None,
+) -> Path:
+    sequence_model = "lstm" if sequence_model is None else sequence_model
+    stitch_mode = "hidden" if stitch_mode is None else stitch_mode
+    if sequence_model == "lstm" and stitch_mode == "hidden":
+        log_name = (
+            "EPINN_PhyLSTM"
+            if variant == "increment"
+            else "EPINN_Full_PhyLSTM"
+        )
+    else:
+        prefix = "EPINN" if variant == "increment" else "EPINN_Full"
+        log_name = f"{prefix}_{sequence_model}_{stitch_mode}"
     log_root = Path(__file__).resolve().parent / "logs" / log_name
     candidates = [path for path in log_root.glob("loss_*") if path.is_dir()]
     if not candidates:
@@ -94,7 +140,9 @@ def resolve_paths(args: argparse.Namespace) -> tuple[Path, Path, Path]:
         run_dir = (
             args.run_dir.expanduser().resolve()
             if args.run_dir is not None
-            else _latest_run_directory(args.variant).resolve()
+            else _latest_run_directory(
+                args.variant, args.sequence_model, args.stitch_mode
+            ).resolve()
         )
         checkpoint = _best_checkpoint(run_dir).resolve()
     if not checkpoint.is_file():
@@ -139,9 +187,22 @@ def build_model(
         ),
         "hidden_size": int(checkpoint["hidden_size"]),
         "fc_size": int(checkpoint["fc_size"]),
+        "sequence_model": checkpoint.get("sequence_model", "lstm"),
+        "stitch_mode": checkpoint.get("stitch_mode", "hidden"),
+        "transformer_layers": int(checkpoint.get("transformer_layers", 3)),
+        "transformer_heads": int(checkpoint.get("transformer_heads", 4)),
+        "transformer_ff_size": checkpoint.get("transformer_ff_size"),
+        "transformer_memory_length": int(
+            checkpoint.get("transformer_memory_length", 128)
+        ),
     }
     if variant == "increment":
         model = EPINN_PhyLSTM_NetBody(
+            input_displacement_scale=float(
+                checkpoint.get(
+                    "input_displacement_scale", config.displacement_scale
+                )
+            ),
             output_increment_scale=float(
                 checkpoint.get(
                     "output_increment_scale",
@@ -350,6 +411,8 @@ def save_matlab_results(
         path,
         {
             "method": f"EPINN_{variant}",
+            "sequenceModel": checkpoint.get("sequence_model", "lstm"),
+            "stitchMode": checkpoint.get("stitch_mode", "hidden"),
             "checkpointPath": str(checkpoint_path),
             "checkpointEpoch": int(checkpoint.get("epoch", -1)),
             "checkpointValLoss": float(checkpoint.get("val_loss", np.nan)),
@@ -457,6 +520,8 @@ def main() -> None:
     )
     data = load_case_data(config)
     split = build_data_split(config, data.load.shape[0])
+    if "test_indices" in checkpoint.get("data_split", {}):
+        split.test = np.asarray(checkpoint["data_split"]["test_indices"], dtype=np.int64)
     tensors = as_torch_case(data, device)
     model = build_model(args.variant, checkpoint, tensors, config, device)
     chunk_length = int(
@@ -466,6 +531,11 @@ def main() -> None:
     )
 
     print(f"Variant: {args.variant}")
+    print(
+        "Sequence/stitch: "
+        f"{checkpoint.get('sequence_model', 'lstm')}/"
+        f"{checkpoint.get('stitch_mode', 'hidden')}"
+    )
     print(f"Run directory: {run_dir}")
     print(f"Selected checkpoint: {checkpoint_path.name}")
     print(

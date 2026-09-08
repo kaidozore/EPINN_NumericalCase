@@ -9,6 +9,119 @@ import torch.nn.functional as nn_fun
 from extensions import steel02_native
 
 
+class CausalTransformer_FC_Module(nn.Module):
+    """Causal Transformer followed by FC-ReLU-FC.
+
+    The module caches *input embeddings* rather than graph-connected encoder
+    outputs.  Consequently, a chunk can attend to a fixed amount of preceding
+    context while gradients remain truncated at chunk boundaries, matching
+    the TBPTT convention used by :class:`LSTM_FC_Module`.
+    """
+
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        hidden_size: int,
+        fc_size: int | None = None,
+        num_layers: int = 3,
+        num_heads: int = 4,
+        feedforward_size: int | None = None,
+        memory_length: int = 128,
+    ) -> None:
+        super().__init__()
+        if hidden_size % num_heads != 0:
+            raise ValueError("hidden_size must be divisible by num_heads.")
+        if memory_length < 0:
+            raise ValueError("memory_length must be non-negative.")
+        fc_size = hidden_size if fc_size is None else fc_size
+        feedforward_size = (
+            4 * hidden_size
+            if feedforward_size is None
+            else feedforward_size
+        )
+        self.hidden_size = int(hidden_size)
+        self.memory_length = int(memory_length)
+        self.Input = nn.Linear(input_size, hidden_size)
+        layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=num_heads,
+            dim_feedforward=feedforward_size,
+            dropout=0.0,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.Encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
+        self.FC1 = nn.Linear(hidden_size, fc_size)
+        self.FC2 = nn.Linear(fc_size, output_size)
+        self.Relu = nn.ReLU()
+
+    @staticmethod
+    def _positional_encoding(
+        length: int,
+        hidden_size: int,
+        offset: int,
+        reference: torch.Tensor,
+    ) -> torch.Tensor:
+        position = torch.arange(
+            offset,
+            offset + length,
+            device=reference.device,
+            dtype=reference.dtype,
+        ).unsqueeze(1)
+        even_count = (hidden_size + 1) // 2
+        exponent = torch.arange(
+            even_count,
+            device=reference.device,
+            dtype=reference.dtype,
+        )
+        exponent = exponent * (-2.0 / hidden_size)
+        frequency = torch.exp(exponent * torch.log(reference.new_tensor(10000.0)))
+        phase = position * frequency.unsqueeze(0)
+        encoding = reference.new_zeros(length, hidden_size)
+        encoding[:, 0::2] = torch.sin(phase)
+        if hidden_size > 1:
+            encoding[:, 1::2] = torch.cos(phase[:, : hidden_size // 2])
+        return encoding.unsqueeze(0)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        state=None,
+        return_state: bool = False,
+    ):
+        offset = 0 if state is None else int(state["position"])
+        current = self.Input(x) * (self.hidden_size ** 0.5)
+        current = current + self._positional_encoding(
+            current.shape[1], self.hidden_size, offset, current
+        )
+        memory = None if state is None else state.get("memory")
+        combined = current if memory is None else torch.cat((memory, current), dim=1)
+        causal_mask = torch.triu(
+            torch.ones(
+                combined.shape[1],
+                combined.shape[1],
+                dtype=torch.bool,
+                device=combined.device,
+            ),
+            diagonal=1,
+        )
+        encoded = self.Encoder(combined, mask=causal_mask)
+        encoded = encoded[:, -current.shape[1] :]
+        output = self.FC2(self.Relu(self.FC1(encoded)))
+        if not return_state:
+            return output
+        if self.memory_length == 0:
+            next_memory = None
+        else:
+            next_memory = combined[:, -self.memory_length :].detach()
+        return output, {
+            "memory": next_memory,
+            "position": offset + current.shape[1],
+        }
+
+
 class _FiberSteel02LocalTangentFunction(torch.autograd.Function):
     """Exact Steel02 history in forward; local consistent tangent in backward."""
 

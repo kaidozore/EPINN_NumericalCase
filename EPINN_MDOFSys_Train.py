@@ -33,6 +33,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=10)
     parser.add_argument("--hidden-size", type=int, default=120)
     parser.add_argument("--fc-size", type=int, default=120)
+    parser.add_argument(
+        "--sequence-variant",
+        choices=(
+            "lstm-hidden",
+            "transformer-hidden",
+            "lstm-explicit-overlap",
+            "transformer-explicit-overlap",
+        ),
+        default=None,
+        help=(
+            "One-switch selection of the four comparison forms; when set, "
+            "it overrides --sequence-model and --stitch-mode."
+        ),
+    )
+    parser.add_argument(
+        "--sequence-model", choices=("lstm", "transformer"), default="lstm",
+        help="Temporal network used inside E-PINN.",
+    )
+    parser.add_argument(
+        "--stitch-mode", choices=("hidden", "explicit-overlap"),
+        default="hidden",
+        help=(
+            "hidden: pass LSTM state/Transformer memory; explicit-overlap: "
+            "reset network memory, pass terminal displacement explicitly, "
+            "and penalize the duplicated boundary output."
+        ),
+    )
+    parser.add_argument("--continuity-loss-weight", type=float, default=1.0)
+    parser.add_argument("--transformer-layers", type=int, default=3)
+    parser.add_argument("--transformer-heads", type=int, default=4)
+    parser.add_argument("--transformer-ff-size", type=int, default=None)
+    parser.add_argument(
+        "--transformer-memory-length", type=int, default=128,
+        help="Cached causal context for Transformer hidden stitching.",
+    )
     parser.add_argument("--time-truncation", type=int, default=600)
     parser.add_argument("--learning-rate", type=float, default=1.0e-3)
     parser.add_argument("--lr-patience", type=int, default=15)
@@ -81,7 +116,20 @@ def parse_args() -> argparse.Namespace:
         "--device",
         default="cuda" if torch.cuda.is_available() else "cpu",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.sequence_variant is not None:
+        mapping = {
+            "lstm-hidden": ("lstm", "hidden"),
+            "transformer-hidden": ("transformer", "hidden"),
+            "lstm-explicit-overlap": ("lstm", "explicit-overlap"),
+            "transformer-explicit-overlap": (
+                "transformer", "explicit-overlap"
+            ),
+        }
+        args.sequence_model, args.stitch_mode = mapping[
+            args.sequence_variant
+        ]
+    return args
 
 
 def main() -> None:
@@ -132,6 +180,13 @@ def main() -> None:
         output_increment_scale=config.displacement_increment_scale,
         hidden_size=args.hidden_size,
         fc_size=args.fc_size,
+        input_displacement_scale=config.displacement_scale,
+        sequence_model=args.sequence_model,
+        stitch_mode=args.stitch_mode,
+        transformer_layers=args.transformer_layers,
+        transformer_heads=args.transformer_heads,
+        transformer_ff_size=args.transformer_ff_size,
+        transformer_memory_length=args.transformer_memory_length,
     ).double().to(device)
     modelLoss = EPINN_MDOFSys_DisIncrement_PhyLoss(
         increment_scale=config.displacement_increment_scale,
@@ -143,6 +198,7 @@ def main() -> None:
         label_local_cumsum_loss_weight=(
             args.label_local_cumsum_loss_weight
         ),
+        continuity_loss_weight=args.continuity_loss_weight,
     ).double().to(device)
     optimizer = optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=5.0e-4
@@ -158,7 +214,12 @@ def main() -> None:
         min_lr=args.min_learning_rate,
     )
 
-    log_root = Path(__file__).resolve().parent / "logs" / "EPINN_PhyLSTM"
+    experiment_name = (
+        "EPINN_PhyLSTM"
+        if args.sequence_model == "lstm" and args.stitch_mode == "hidden"
+        else f"EPINN_{args.sequence_model}_{args.stitch_mode}"
+    )
+    log_root = Path(__file__).resolve().parent / "logs" / experiment_name
     lossHistory = LossHistory(log_root)
     checkpoint_dir = lossHistory.save_path / "checkpoints"
     checkpoint_data = {
@@ -175,6 +236,13 @@ def main() -> None:
         },
         "network_input": "elastic_displacement_increment_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement_increment",
+        "sequence_model": args.sequence_model,
+        "stitch_mode": args.stitch_mode,
+        "continuity_loss_weight": args.continuity_loss_weight,
+        "transformer_layers": args.transformer_layers,
+        "transformer_heads": args.transformer_heads,
+        "transformer_ff_size": args.transformer_ff_size,
+        "transformer_memory_length": args.transformer_memory_length,
         "scl_target_detached": True,
         "loss": (
             "increment_loss_weight*MSE((LSTM_increment-SCL_increment)/"
@@ -183,9 +251,11 @@ def main() -> None:
             "fixed_displacement_scale) + label_increment_loss_weight*"
             "MSE((LSTM_increment-labelled_increment)/fixed_increment_scale) "
             "+ label_local_cumsum_loss_weight*MSE(local_cumsum("
-            "LSTM_increment-labelled_increment)/fixed_displacement_scale)"
+            "LSTM_increment-labelled_increment)/fixed_displacement_scale) "
+            "+ continuity_loss_weight*MSE(overlap_boundary_error)"
         ),
         "input_increment_scale": float(config.displacement_increment_scale),
+        "input_displacement_scale": float(config.displacement_scale),
         "hidden_size": args.hidden_size,
         "fc_size": args.fc_size,
         "n_load": int(data.load.shape[2]),
@@ -263,8 +333,9 @@ def main() -> None:
     )
     print(f"Training configuration: {configuration_path}")
     print(
-        "E-PINN: elastic displacement increments -> LSTM -> nonlinear total "
-        "increments; reset local cumsum windows constrain local trajectories."
+        "E-PINN: elastic displacement increments -> "
+        f"{args.sequence_model.upper()} -> nonlinear total increments; "
+        f"stitch_mode={args.stitch_mode}."
     )
     start_time = time.time()
     for epoch in range(args.epochs):

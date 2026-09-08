@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from nets.common import (
+    CausalTransformer_FC_Module,
     ElasticIncrementInput,
     FiberSteel02Module,
     LSTM_FC_Module,
@@ -29,12 +30,32 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         output_increment_scale: float | None = None,
         hidden_size: int = 120,
         fc_size: int = 120,
+        input_displacement_scale: float = 5.0e-1,
+        sequence_model: str = "lstm",
+        stitch_mode: str = "hidden",
+        transformer_layers: int = 3,
+        transformer_heads: int = 4,
+        transformer_ff_size: int | None = None,
+        transformer_memory_length: int = 128,
     ) -> None:
         super().__init__()
         if nLoadNL != nLoad:
             raise ValueError("All five reduced DOFs carry nonlinear fiber force.")
         self.nLoad = nLoad
         self.nLoadNL = nLoadNL
+        self.sequence_model = sequence_model.lower()
+        self.stitch_mode = stitch_mode.lower()
+        if self.sequence_model not in {"lstm", "transformer"}:
+            raise ValueError("sequence_model must be 'lstm' or 'transformer'.")
+        if self.stitch_mode not in {"hidden", "explicit-overlap"}:
+            raise ValueError(
+                "stitch_mode must be 'hidden' or 'explicit-overlap'."
+            )
+        if input_displacement_scale <= 0.0:
+            raise ValueError("input_displacement_scale must be positive.")
+        # Plain scalar (not a state-dict buffer) keeps older increment-model
+        # checkpoints loadable without migration.
+        self.input_displacement_scale = float(input_displacement_scale)
         self.output_increment_scale = float(
             input_increment_scale
             if output_increment_scale is None
@@ -43,9 +64,24 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         self.ElasticInput_Module = ElasticIncrementInput(
             influence_kernel, nLoad, input_increment_scale
         )
-        self.LSTM_Module = LSTM_FC_Module(
-            nLoad, nLoadNL, hidden_size, fc_size
-        )
+        temporal_input_size = nLoad + (1 if self.stitch_mode == "explicit-overlap" else 0)
+        if self.sequence_model == "lstm":
+            self.LSTM_Module = LSTM_FC_Module(
+                temporal_input_size, nLoadNL, hidden_size, fc_size
+            )
+            temporal_module = self.LSTM_Module
+        else:
+            self.Transformer_Module = CausalTransformer_FC_Module(
+                temporal_input_size,
+                nLoadNL,
+                hidden_size,
+                fc_size,
+                num_layers=transformer_layers,
+                num_heads=transformer_heads,
+                feedforward_size=transformer_ff_size,
+                memory_length=transformer_memory_length,
+            )
+            temporal_module = self.Transformer_Module
         # Directly accumulated increments are highly sensitive to even a
         # small persistent output-head bias over a 5000-step history.  Start
         # near the elastic response scale, while retaining a conservative
@@ -54,14 +90,76 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         # layers from the first optimizer step.
         self.output_head_init_gain = 5.0e-2
         nn.init.xavier_uniform_(
-            self.LSTM_Module.FC2.weight,
+            temporal_module.FC2.weight,
             gain=self.output_head_init_gain,
         )
-        nn.init.zeros_(self.LSTM_Module.FC2.bias)
+        nn.init.zeros_(temporal_module.FC2.bias)
         self.Constitutive_Module = FiberSteel02Module(
             stiffness, fiber, steel
         )
         self.SCL_Module = SCL_Module(influence_kernel)
+
+    def _temporal_module(self):
+        return (
+            self.LSTM_Module
+            if self.sequence_model == "lstm"
+            else self.Transformer_Module
+        )
+
+    def _temporal_forward(
+        self,
+        network_input: torch.Tensor,
+        initial_displacement: torch.Tensor | None,
+        temporal_state=None,
+    ):
+        """Predict current increments and the optional overlap displacement."""
+        if self.stitch_mode == "explicit-overlap":
+            if initial_displacement is None:
+                initial_displacement = torch.zeros_like(network_input[:, :1])
+            initial_token = torch.cat(
+                (
+                    initial_displacement / self.input_displacement_scale,
+                    torch.ones_like(initial_displacement[:, :, :1]),
+                ),
+                dim=2,
+            )
+            response_tokens = torch.cat(
+                (
+                    network_input,
+                    torch.zeros_like(network_input[:, :, :1]),
+                ),
+                dim=2,
+            )
+            tokens = torch.cat((initial_token, response_tokens), dim=1)
+            output, _ = self._temporal_module()(tokens, None, True)
+            boundary_prediction = (
+                output[:, :1] * self.input_displacement_scale
+            )
+            increment = output[:, 1:] * self.output_increment_scale
+            return increment, None, boundary_prediction, initial_displacement
+        increment, temporal_state = self._temporal_module()(
+            network_input, temporal_state, True
+        )
+        return (
+            increment * self.output_increment_scale,
+            temporal_state,
+            None,
+            None,
+        )
+
+    def _detach_temporal_state(self, state):
+        if state is None:
+            return None
+        if self.sequence_model == "lstm":
+            return tuple(
+                (hidden.detach(), cell.detach()) for hidden, cell in state
+            )
+        return {
+            "memory": (
+                None if state["memory"] is None else state["memory"].detach()
+            ),
+            "position": int(state["position"]),
+        }
 
     def forward(self, load: torch.Tensor) -> dict[str, torch.Tensor]:
         # Reference-code layout: [batch, 1, nLoad, timeLength].
@@ -69,9 +167,10 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         network_input, elastic_increment, elastic_displacement = (
             self.ElasticInput_Module(load_sequence)
         )
-        increment_nl = force_initial_zero(
-            self.LSTM_Module(network_input) * self.output_increment_scale
+        increment_nl, _, boundary_prediction, boundary_initial = (
+            self._temporal_forward(network_input, None)
         )
+        increment_nl = force_initial_zero(increment_nl)
         displacement_nl = torch.cumsum(increment_nl, dim=1)
         force_internal, force_nonlinear = self.Constitutive_Module(
             displacement_nl
@@ -92,7 +191,7 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             ],
             dim=1,
         )
-        return {
+        result = {
             "dis_increment_nl": increment_nl,
             "elastic_dis_increment": elastic_increment,
             "elastic_dis": elastic_displacement,
@@ -104,6 +203,10 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             "vel": velocity,
             "dis_increment_scl": increment_nl_scl,
         }
+        if boundary_prediction is not None:
+            result["boundary_prediction"] = boundary_prediction
+            result["boundary_initial"] = boundary_initial
+        return result
 
     def forward_chunk(self, load, state=None):
         """Evaluate one consecutive TBPTT chunk with all physical histories."""
@@ -117,11 +220,18 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         ) = self.ElasticInput_Module.forward_chunk(
             load_sequence, elastic_state
         )
-        lstm_state = None if state is None else state["lstm"]
-        increment_nl, lstm_state = self.LSTM_Module(
-            network_input, lstm_state, True
+        temporal_state = None if state is None else state.get("temporal")
+        explicit_initial = (
+            None if state is None else state.get("explicit_displacement")
         )
-        increment_nl = increment_nl * self.output_increment_scale
+        (
+            increment_nl,
+            temporal_state,
+            boundary_prediction,
+            boundary_initial,
+        ) = self._temporal_forward(
+            network_input, explicit_initial, temporal_state
+        )
         if state is None:
             increment_nl = force_initial_zero(increment_nl)
             displacement0 = torch.zeros_like(increment_nl[:, :1])
@@ -160,19 +270,17 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         )
         history_length = self.SCL_Module.timeTrun - 1
         next_state = {
-            "lstm": tuple(
-                (hidden.detach(), cell.detach())
-                for hidden, cell in lstm_state
-            ),
+            "temporal": self._detach_temporal_state(temporal_state),
             "elastic": elastic_state,
             "displacement_nl": displacement_nl[:, -1:].detach(),
+            "explicit_displacement": displacement_nl[:, -1:].detach(),
             "material": {
                 key: value.detach() for key, value in material_state.items()
             },
             "scl_history": scl_input[:, -history_length:].detach(),
             "scl_displacement": displacement[:, -1:].detach(),
         }
-        return {
+        result = {
             "dis_increment_nl": increment_nl,
             "elastic_dis_increment": elastic_increment,
             "elastic_dis": elastic_displacement,
@@ -183,4 +291,8 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             "dis": displacement,
             "vel": velocity,
             "dis_increment_scl": increment_scl,
-        }, next_state
+        }
+        if boundary_prediction is not None:
+            result["boundary_prediction"] = boundary_prediction
+            result["boundary_initial"] = boundary_initial
+        return result, next_state

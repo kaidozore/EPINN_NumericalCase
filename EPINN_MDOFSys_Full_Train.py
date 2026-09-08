@@ -27,8 +27,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", type=Path, default=default_root)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=10)
+    parser.add_argument("--labelled-samples", type=int, default=0)
+    parser.add_argument("--label-weight", type=float, default=0.1)
     parser.add_argument("--hidden-size", type=int, default=120)
     parser.add_argument("--fc-size", type=int, default=120)
+    parser.add_argument(
+        "--sequence-variant",
+        choices=(
+            "lstm-hidden",
+            "transformer-hidden",
+            "lstm-explicit-overlap",
+            "transformer-explicit-overlap",
+        ),
+        default=None,
+        help=(
+            "One-switch selection of the four comparison forms; when set, "
+            "it overrides --sequence-model and --stitch-mode."
+        ),
+    )
+    parser.add_argument(
+        "--sequence-model", choices=("lstm", "transformer"), default="lstm"
+    )
+    parser.add_argument(
+        "--stitch-mode", choices=("hidden", "explicit-overlap"),
+        default="hidden",
+    )
+    parser.add_argument("--continuity-loss-weight", type=float, default=1.0)
+    parser.add_argument("--transformer-layers", type=int, default=3)
+    parser.add_argument("--transformer-heads", type=int, default=4)
+    parser.add_argument("--transformer-ff-size", type=int, default=None)
+    parser.add_argument("--transformer-memory-length", type=int, default=128)
     parser.add_argument("--time-truncation", type=int, default=600)
     parser.add_argument("--learning-rate", type=float, default=1.0e-3)
     parser.add_argument("--lr-patience", type=int, default=15)
@@ -49,7 +77,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.sequence_variant is not None:
+        mapping = {
+            "lstm-hidden": ("lstm", "hidden"),
+            "transformer-hidden": ("transformer", "hidden"),
+            "lstm-explicit-overlap": ("lstm", "explicit-overlap"),
+            "transformer-explicit-overlap": (
+                "transformer", "explicit-overlap"
+            ),
+        }
+        args.sequence_model, args.stitch_mode = mapping[
+            args.sequence_variant
+        ]
+    return args
 
 
 def main() -> None:
@@ -60,6 +101,7 @@ def main() -> None:
         num_workers=args.num_workers,
         time_truncation=args.time_truncation,
         sequence_length=args.sequence_length,
+        labelled_sample_count=args.labelled_samples,
     )
     seed_everything(config.random_seed)
     device = torch.device(args.device)
@@ -69,7 +111,7 @@ def main() -> None:
     data = load_case_data(config)
     split = build_data_split(config, data.load.shape[0])
     tensors = as_torch_case(data, device)
-    train_dataset = DynAnaDataset(data, split.train)
+    train_dataset = DynAnaDataset(data, split.train, labelled_indices=split.labelled)
     val_dataset = DynAnaDataset(data, split.validation)
     loader_options = {
         "batch_size": config.batch_size,
@@ -78,7 +120,9 @@ def main() -> None:
         "collate_fn": DynAna_dataset_collate,
     }
     genTrain = DataLoader(
-        train_dataset, shuffle=True, drop_last=True, **loader_options
+        train_dataset, shuffle=True, drop_last=True,
+        generator=torch.Generator().manual_seed(config.random_seed),
+        **loader_options
     )
     genVal = DataLoader(
         val_dataset, shuffle=False, drop_last=False, **loader_options
@@ -96,8 +140,17 @@ def main() -> None:
         output_displacement_scale=config.displacement_scale,
         hidden_size=args.hidden_size,
         fc_size=args.fc_size,
+        sequence_model=args.sequence_model,
+        stitch_mode=args.stitch_mode,
+        transformer_layers=args.transformer_layers,
+        transformer_heads=args.transformer_heads,
+        transformer_ff_size=args.transformer_ff_size,
+        transformer_memory_length=args.transformer_memory_length,
     ).double().to(device)
-    modelLoss = EPINN_MDOFSys_FullDis_PhyLoss().double().to(device)
+    modelLoss = EPINN_MDOFSys_FullDis_PhyLoss(
+        continuity_loss_weight=args.continuity_loss_weight,
+        label_weight=args.label_weight,
+    ).double().to(device)
     optimizer = optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=5.0e-4
     )
@@ -112,7 +165,12 @@ def main() -> None:
         min_lr=args.min_learning_rate,
     )
 
-    log_root = Path(__file__).resolve().parent / "logs" / "EPINN_Full_PhyLSTM"
+    experiment_name = (
+        "EPINN_Full_PhyLSTM"
+        if args.sequence_model == "lstm" and args.stitch_mode == "hidden"
+        else f"EPINN_Full_{args.sequence_model}_{args.stitch_mode}"
+    )
+    log_root = Path(__file__).resolve().parent / "logs" / experiment_name
     lossHistory = LossHistory(log_root)
     checkpoint_dir = lossHistory.save_path / "checkpoints"
     checkpoint_data = {
@@ -122,14 +180,29 @@ def main() -> None:
             "train_indices": split.train.tolist(),
             "validation_indices": split.validation.tolist(),
             "test_indices": split.test.tolist(),
+            "labelled_train_indices": split.labelled.tolist(),
             "priority_nonlinear_indices": (
                 split.priority_nonlinear.tolist()
             ),
         },
         "network_input": "elastic_total_displacement_from_fixed_SCL",
         "network_output": "nonlinear_total_displacement",
+        "sequence_model": args.sequence_model,
+        "stitch_mode": args.stitch_mode,
+        "continuity_loss_weight": args.continuity_loss_weight,
+        "transformer_layers": args.transformer_layers,
+        "transformer_heads": args.transformer_heads,
+        "transformer_ff_size": args.transformer_ff_size,
+        "transformer_memory_length": args.transformer_memory_length,
         "scl_target_detached": True,
-        "loss": "mean((LSTM_displacement-SCL_displacement)^2)",
+        "labelled_samples": len(split.labelled),
+        "label_weight": args.label_weight,
+        "trainable_parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
+        "loss": (
+            "MSE(network_displacement-SCL_displacement) + "
+            "continuity_loss_weight*MSE(overlap_boundary_error) + "
+            "label_weight*MSE(labelled_network_displacement-labelled_displacement)"
+        ),
         "input_increment_scale": float(config.displacement_increment_scale),
         "input_displacement_scale": float(config.displacement_scale),
         "output_displacement_scale": float(config.displacement_scale),
@@ -188,13 +261,15 @@ def main() -> None:
         f"{len(split.train)}/{len(split.validation)}/{len(split.test)}"
     )
     print(f"Training configuration: {configuration_path}")
+    print(f"Labelled MATLAB samples: {(split.labelled + 1).tolist()}; label_weight={args.label_weight}")
     print(
         "Priority nonlinear training samples (MATLAB indices): "
         f"{(split.priority_nonlinear + 1).tolist()}"
     )
     print(
-        "Full E-PINN: elastic total displacement -> LSTM -> nonlinear total "
-        "displacement; loss = MSE(LSTM displacement - SCL displacement)."
+        "Full E-PINN: elastic total displacement -> "
+        f"{args.sequence_model.upper()} -> nonlinear total displacement; "
+        f"stitch_mode={args.stitch_mode}."
     )
     start_time = time.time()
     for epoch in range(args.epochs):

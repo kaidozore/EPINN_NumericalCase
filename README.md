@@ -84,6 +84,57 @@ python EPINN_MDOFSys_Full_Train.py --data-root .. --epochs 1000 \
   --batch-size 10 --tbptt-length 500
 ```
 
+### 四种时序拼接对照
+
+全量入口新增 `--labelled-samples 10 --label-weight 0.1`：指定10条训练样本
+参加全量位移标签MSE。默认标签数为0以保留旧主线。CSV分别记录物理MSE、
+标签MSE、连续性MSE，检查点保存标签索引和网络参数量。
+`run_full_stitch_comparison.py --data-root .. --output-dir comparison_run`
+按统一设置顺序训练其余三组（不重复LSTM-hidden），每组200 epochs，随后
+自动测试并保存MAT结果。输出目录必须尚不存在，状态写入`status.json`。
+
+增量与全量 E-PINN 训练入口均支持 `--sequence-variant` 一个开关，原有命令
+不加参数时仍为 `lstm-hidden`，因此旧主线不变：
+
+| `--sequence-variant` | 对照形式 |
+|---|---|
+| `lstm-hidden` | LSTM 隐状态跨段传递 |
+| `transformer-hidden` | Transformer 因果记忆跨段传递 |
+| `lstm-explicit-overlap` | LSTM 显式初态、边界重叠及连续性 loss |
+| `transformer-explicit-overlap` | Transformer 显式初态、边界重叠及连续性 loss |
+
+例如，对增量 E-PINN 运行老师提出的严格重叠形式：
+
+```bash
+python EPINN_MDOFSys_Train.py --data-root .. --epochs 1000 \
+  --batch-size 10 --tbptt-length 500 --hidden-size 120 --fc-size 120 \
+  --sequence-variant transformer-explicit-overlap \
+  --continuity-loss-weight 1.0 --transformer-layers 3 \
+  --transformer-heads 4 --transformer-memory-length 128
+```
+
+将脚本名替换为 `EPINN_MDOFSys_Full_Train.py` 即可对全量 E-PINN 做同一
+组对照。显式模式对每段的 `N` 个物理时刻在网络内部加入一个初态 token，
+得到 `N+1` 个网络输出；第一个输出与上一段末状态构成连续性 loss，随后被
+丢弃，余下 `N` 个输出进入 Steel02/SCL，因此保存的最终时程没有重复点。
+Steel02 和 SCL 的历史仍在段间连续传递，但不作为网络输入。
+
+四组合静态检查：
+
+```bash
+python static_check_stitch_variants.py --data-root ..
+```
+
+测试非默认组合时可直接指定两个开关以自动选择相应的最新训练目录：
+
+```bash
+python EPINN_MDOFSys_Test.py --variant increment --data-root .. \
+  --sequence-variant transformer-explicit-overlap
+```
+
+底层的 `--sequence-model` 与 `--stitch-mode` 两个参数仍保留，便于单独控制；
+一旦给出 `--sequence-variant`，它会覆盖这两个底层参数。
+
 PINN 和 E-PINN 均默认采用全局梯度范数裁剪 `1.0`。E-PINN 会在 CSV 中记录
 裁剪前的逐轮平均梯度范数 `train_gradient_norm_before_clip`；可通过
 `--gradient-clip 0.5` 调小阈值，或通过 `--gradient-clip 0` 关闭裁剪。

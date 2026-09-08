@@ -144,6 +144,12 @@ def fitOneEpoch_EPINN_PhyLoss(
     metric_text = ""
     if train_metrics:
         components = []
+        if "continuity_mse" in train_metrics:
+            components.append(
+                "continuity_mse: "
+                f"{train_metrics['continuity_mse']:.3e}/"
+                f"{val_metrics['continuity_mse']:.3e}"
+            )
         if "increment_mse" in train_metrics:
             components.append(
                 "increment/local_cumsum: "
