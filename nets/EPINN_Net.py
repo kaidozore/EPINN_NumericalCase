@@ -37,6 +37,7 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         transformer_heads: int = 4,
         transformer_ff_size: int | None = None,
         transformer_memory_length: int = 128,
+        reset_lstm_state: bool = False,
     ) -> None:
         super().__init__()
         if nLoadNL != nLoad:
@@ -45,6 +46,9 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         self.nLoadNL = nLoadNL
         self.sequence_model = sequence_model.lower()
         self.stitch_mode = stitch_mode.lower()
+        self.reset_lstm_state = bool(reset_lstm_state)
+        if self.reset_lstm_state and (self.sequence_model != "lstm" or self.stitch_mode != "hidden"):
+            raise ValueError("reset_lstm_state requires lstm with hidden stitching.")
         if self.sequence_model not in {"lstm", "transformer"}:
             raise ValueError("sequence_model must be 'lstm' or 'transformer'.")
         if self.stitch_mode not in {"hidden", "explicit-overlap"}:
@@ -224,6 +228,8 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             load_sequence, elastic_state
         )
         temporal_state = None if state is None else state.get("temporal")
+        if self.reset_lstm_state:
+            temporal_state = None  # Only neural memory resets; physical history persists.
         explicit_initial = (
             None if state is None else state.get("explicit_displacement")
         )

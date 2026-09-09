@@ -201,6 +201,7 @@ def build_model(
     }
     if variant == "increment":
         model = EPINN_PhyLSTM_NetBody(
+            reset_lstm_state=bool(checkpoint.get("reset_lstm_state", False)),
             input_displacement_scale=float(
                 checkpoint.get(
                     "input_displacement_scale", config.displacement_scale
