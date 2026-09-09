@@ -45,7 +45,22 @@ def _run_epoch(
                 # its time-weighted gradient, but the optimizer is updated
                 # only once after all chunks in this batch are processed.
                 optimizer.zero_grad(set_to_none=True)
-            for start in range(0, total_steps, chunk_length):
+            full_history = getattr(model, "physics_evaluation", "chunk") == "full-history"
+            if full_history:
+                prediction = model.forward_full_history(loads, chunk_length)
+                target_full = {"dis": target_displacement, "dis_increment": target_increment,
+                               "labelled": target_labelled}
+                loss, metrics = modelLoss(prediction, target_full, return_metrics=True)
+                if not torch.isfinite(loss):
+                    raise FloatingPointError("Non-finite full-history E-PINN loss.")
+                if training:
+                    loss.backward()  # One backward only after complete history and physics.
+                weight = loads.shape[0] * total_steps
+                total += float(loss.detach()) * weight
+                for name, value in metrics.items():
+                    metric_totals[name] = metric_totals.get(name, 0.0) + float(value) * weight
+                count += weight
+            for start in (() if full_history else range(0, total_steps, chunk_length)):
                 stop = min(start + chunk_length, total_steps)
                 load_chunk = loads[..., start:stop]
                 prediction, state = model.forward_chunk(load_chunk, state)
@@ -76,7 +91,7 @@ def _run_epoch(
             if training:
                 if gradient_clip is not None:
                     gradient_norm = torch.nn.utils.clip_grad_norm_(
-                        model.parameters(), gradient_clip
+                        model.parameters(), gradient_clip, error_if_nonfinite=True
                     )
                     gradient_norm_total += float(gradient_norm.detach())
                     gradient_norm_count += 1

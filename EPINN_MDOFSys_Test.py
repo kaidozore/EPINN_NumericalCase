@@ -202,6 +202,7 @@ def build_model(
     if variant == "increment":
         model = EPINN_PhyLSTM_NetBody(
             reset_lstm_state=bool(checkpoint.get("reset_lstm_state", False)),
+            physics_evaluation=checkpoint.get("physics_evaluation", "chunk"),
             input_displacement_scale=float(
                 checkpoint.get(
                     "input_displacement_scale", config.displacement_scale
@@ -254,6 +255,11 @@ def chunked_batched_predict(
                 device=device,
             )
             state = None
+            if getattr(model, "physics_evaluation", "chunk") == "full-history":
+                prediction = model.forward_full_history(load_tensor, chunk_length)
+                for key in wanted:
+                    batches[key].append(prediction[key].detach().cpu().numpy())
+                continue
             pieces: dict[str, list[torch.Tensor]] = {key: [] for key in wanted}
             total_steps = load_tensor.shape[-1]
             for start in range(0, total_steps, chunk_length):

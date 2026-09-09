@@ -38,6 +38,7 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         transformer_ff_size: int | None = None,
         transformer_memory_length: int = 128,
         reset_lstm_state: bool = False,
+        physics_evaluation: str = "chunk",
     ) -> None:
         super().__init__()
         if nLoadNL != nLoad:
@@ -47,6 +48,11 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         self.sequence_model = sequence_model.lower()
         self.stitch_mode = stitch_mode.lower()
         self.reset_lstm_state = bool(reset_lstm_state)
+        self.physics_evaluation = physics_evaluation
+        if physics_evaluation not in {"chunk", "full-history"}:
+            raise ValueError("physics_evaluation must be chunk or full-history.")
+        if physics_evaluation == "full-history" and (self.sequence_model != "lstm" or self.stitch_mode != "hidden"):
+            raise ValueError("Full-history comparison supports only LSTM hidden stitching.")
         if self.reset_lstm_state and (self.sequence_model != "lstm" or self.stitch_mode != "hidden"):
             raise ValueError("reset_lstm_state requires lstm with hidden stitching.")
         if self.sequence_model not in {"lstm", "transformer"}:
@@ -214,6 +220,44 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             result["boundary_prediction"] = boundary_prediction
             result["boundary_initial"] = boundary_initial
         return result
+
+    def forward_full_history(self, load, chunk_length):
+        """Neural TBPTT first; detached full-history constitutive/SCL second.
+
+        Keep every chunk output graph, detaching only h,c between chunks.
+        No threshold filtering or elastic residual connection is applied.
+        """
+        if self.sequence_model != "lstm" or self.stitch_mode != "hidden":
+            raise ValueError("Full-history evaluation requires LSTM hidden mode.")
+        if chunk_length < 1:
+            raise ValueError("chunk_length must be positive.")
+        load_sequence = load.squeeze(1).transpose(1, 2)
+        with torch.no_grad():
+            network_input, elastic_increment, elastic_displacement = self.ElasticInput_Module(load_sequence)
+        pieces = []
+        temporal_state = None
+        for start in range(0, network_input.shape[1], chunk_length):
+            if self.reset_lstm_state:
+                temporal_state = None
+            increment, temporal_state, _, _ = self._temporal_forward(
+                network_input[:, start:start + chunk_length], None, temporal_state
+            )
+            pieces.append(increment)  # Do NOT detach network outputs.
+            temporal_state = self._detach_temporal_state(temporal_state)
+        increment_nl = force_initial_zero(torch.cat(pieces, dim=1))
+        with torch.no_grad():
+            displacement_nl = torch.cumsum(increment_nl.detach(), dim=1)
+            # Exactly one call with the entire displacement history per batch.
+            force_internal, force_nonlinear = self.Constitutive_Module(displacement_nl)
+            structural_state = self.SCL_Module(torch.cat([load_sequence, force_nonlinear], dim=2))
+            displacement = structural_state[:, :, :self.nLoad]
+            increment_scl = torch.cat([torch.zeros_like(displacement[:, :1]),
+                                       displacement[:, 1:] - displacement[:, :-1]], dim=1)
+        return {"dis_increment_nl": increment_nl, "dis_nl": displacement_nl,
+                "elastic_dis_increment": elastic_increment, "elastic_dis": elastic_displacement,
+                "force_internal": force_internal, "force_nonlinear": force_nonlinear,
+                "state": structural_state, "dis": displacement,
+                "vel": structural_state[:, :, self.nLoad:], "dis_increment_scl": increment_scl}
 
     def forward_chunk(self, load, state=None):
         """Evaluate one consecutive TBPTT chunk with all physical histories."""

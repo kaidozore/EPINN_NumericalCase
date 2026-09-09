@@ -13,6 +13,7 @@ def main():
     p.add_argument('--data-root', type=Path, required=True)
     p.add_argument('--output-dir', type=Path, required=True)
     p.add_argument('--epochs', type=int, default=200)
+    p.add_argument('--physics-evaluation', choices=('chunk','full-history'), default='full-history')
     args = p.parse_args()
     root = Path(__file__).resolve().parent
     out = args.output_dir.resolve()
@@ -25,6 +26,7 @@ def main():
               '--local-cumsum-loss-weight', '0.05', '--local-cumsum-window', '32',
               '--label-increment-loss-weight', '0.2', '--label-local-cumsum-loss-weight', '0.01',
               '--device', 'cuda']
+    shared += ['--physics-evaluation', args.physics_evaluation]
     state = dict(created=datetime.now().isoformat(), pid=os.getpid(),
                  git_commit=subprocess.check_output(['git','rev-parse','HEAD'], cwd=root, text=True).strip(),
                  shared_arguments=shared, experiments={k:dict(status='queued') for k in ['carry-hc','reset-hc']})
@@ -36,6 +38,8 @@ def main():
     for name in state['experiments']:
         item = state['experiments'][name]
         logroot = root/'logs'/('EPINN_PhyLSTM' + ('_reset_hc' if name == 'reset-hc' else ''))
+        if args.physics_evaluation == 'full-history':
+            logroot = logroot.with_name(logroot.name + '_full_history')
         before = set(logroot.glob('loss_*'))
         cmd = [sys.executable,'-u',str(root/'EPINN_MDOFSys_Train.py'),*shared]
         if name == 'reset-hc':

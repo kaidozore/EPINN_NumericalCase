@@ -48,7 +48,7 @@ def main() -> None:
         args.checkpoint, map_location=device, weights_only=False
     )
     stored_config = checkpoint["case_config"]
-    if checkpoint.get("reset_lstm_state", False):
+    if checkpoint.get("reset_lstm_state", False) or checkpoint.get("physics_evaluation") == "full-history":
         raise ValueError("Use EPINN_MDOFSys_Test.py --variant increment --run-dir ... --chunk-length 1000 for chunk-reset checkpoints.")
     config = CaseConfig(
         data_root=args.data_root,

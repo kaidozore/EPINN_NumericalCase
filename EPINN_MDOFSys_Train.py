@@ -35,6 +35,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fc-size", type=int, default=120)
     parser.add_argument("--reset-lstm-state", action="store_true",
                         help="Reset h,c per TBPTT chunk, retaining all physical histories.")
+    parser.add_argument("--physics-evaluation", choices=("chunk", "full-history"), default="chunk",
+                        help="full-history: concatenate neural outputs before one detached constitutive/SCL evaluation.")
     parser.add_argument(
         "--sequence-variant",
         choices=(
@@ -192,6 +194,7 @@ def main() -> None:
         transformer_ff_size=args.transformer_ff_size,
         transformer_memory_length=args.transformer_memory_length,
         reset_lstm_state=args.reset_lstm_state,
+        physics_evaluation=args.physics_evaluation,
     ).double().to(device)
     modelLoss = EPINN_MDOFSys_DisIncrement_PhyLoss(
         increment_scale=config.displacement_increment_scale,
@@ -227,6 +230,8 @@ def main() -> None:
     log_root = Path(__file__).resolve().parent / "logs" / experiment_name
     if args.reset_lstm_state:
         log_root = log_root.with_name(experiment_name + "_reset_hc")
+    if args.physics_evaluation == "full-history":
+        log_root = log_root.with_name(log_root.name + "_full_history")
     lossHistory = LossHistory(log_root)
     checkpoint_dir = lossHistory.save_path / "checkpoints"
     checkpoint_data = {
@@ -246,6 +251,7 @@ def main() -> None:
         "sequence_model": args.sequence_model,
         "stitch_mode": args.stitch_mode,
         "reset_lstm_state": args.reset_lstm_state,
+        "physics_evaluation": args.physics_evaluation,
         "overlap_output_quantity": "displacement_increment",
         "continuity_loss_weight": args.continuity_loss_weight,
         "transformer_layers": args.transformer_layers,
