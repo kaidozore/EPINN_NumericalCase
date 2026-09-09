@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--response-form', choices=('full', 'increment'), default='full')
+    parser.add_argument('--variants', nargs='+', choices=('transformer-hidden', 'lstm-explicit-overlap', 'transformer-explicit-overlap'), default=None)
     parser.add_argument('--retry-failed', action='store_true',
                         help='Retry only failed training jobs, preserving completed results.')
     args = parser.parse_args()
@@ -23,6 +24,8 @@ def main():
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=args.retry_failed)
     variants = ('transformer-hidden', 'lstm-explicit-overlap', 'transformer-explicit-overlap')
+    if args.variants is not None:
+        variants = tuple(args.variants)
     shared = ['--data-root', str(args.data_root.resolve()), '--epochs', str(args.epochs),
               '--batch-size', '10', '--hidden-size', '120', '--fc-size', '120',
               '--learning-rate', '2e-4', '--gradient-clip', '0.2',

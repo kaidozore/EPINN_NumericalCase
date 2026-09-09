@@ -111,9 +111,13 @@ def main() -> None:
                     if has_boundary != (stitch_mode == "explicit-overlap"):
                         raise AssertionError("Boundary output does not match stitch mode.")
                     if state is not None and has_boundary:
-                        expected = state["explicit_displacement"]
+                        expected = state["last_increment"] if response_form == "increment" else state["explicit_displacement"]
                         if not torch.equal(prediction["boundary_initial"], expected):
-                            raise AssertionError("Explicit terminal state was not passed.")
+                            raise AssertionError("Overlap target was not passed correctly.")
+                    if response_form == "increment":
+                        start_dis = torch.zeros_like(prediction["dis_nl"][:, :1]) if state is None else state["displacement_nl"]
+                        torch.testing.assert_close(prediction["dis_nl"], start_dis + prediction["dis_increment_nl"].cumsum(dim=1))
+                        torch.testing.assert_close(next_state["last_increment"], prediction["dis_increment_nl"][:, -1:])
                     target = {
                         "dis": target_displacement[:, start:stop],
                         "dis_increment": target_increment[:, start:stop],

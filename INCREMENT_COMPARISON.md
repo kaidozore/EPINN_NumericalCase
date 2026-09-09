@@ -27,9 +27,13 @@ The loss weights are: increment MSE 1, 32-step local cumulative MSE 0.05,
 labelled increment MSE 0.2, labelled local cumulative MSE 0.01. Increment and
 local displacement errors use fixed scales 0.1 m and 0.5 m respectively.
 SCL targets remain detached. Explicit variants additionally use normalized
-boundary displacement MSE with weight 1, with the initial displacement token
-scaled by 0.5 m. The extra token output is a boundary displacement; the 1000
-physical time outputs are increments. It is not added as an extra time step.
+boundary increment MSE with weight 1 (increment scale 0.1 m), with the initial
+displacement INPUT token scaled by 0.5 m. ALL output tokens are increments.
+The extra output repeats the preceding chunk's terminal increment (zero at
+the global start); its detached target is carried separately from the initial
+displacement. It is used only in the overlap loss, never accumulated twice.
+The following 1000 outputs are the new physical time increments. Previous
+mixed displacement/increment explicit checkpoints must not be reused.
 
 Tests automatically export both U_pred (integrated network output) and U_scl,
 the reference responses, sample indices, metrics and plots. Select checkpoints

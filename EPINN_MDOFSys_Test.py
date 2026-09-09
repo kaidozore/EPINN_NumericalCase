@@ -173,6 +173,9 @@ def build_model(
     config: CaseConfig,
     device: torch.device,
 ) -> torch.nn.Module:
+    if (variant == "increment" and checkpoint.get("stitch_mode") == "explicit-overlap"
+            and checkpoint.get("overlap_output_quantity") != "displacement_increment"):
+        raise ValueError("Legacy explicit increment checkpoint used a displacement boundary output; retrain with uniform increment outputs.")
     common = {
         "nLoad": int(checkpoint["n_load"]),
         "nLoadNL": int(checkpoint["n_dof"]),

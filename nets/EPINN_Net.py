@@ -111,8 +111,9 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
         network_input: torch.Tensor,
         initial_displacement: torch.Tensor | None,
         temporal_state=None,
+        previous_increment: torch.Tensor | None = None,
     ):
-        """Predict current increments and the optional overlap displacement."""
+        """Every output is an increment, including the duplicated boundary."""
         if self.stitch_mode == "explicit-overlap":
             if initial_displacement is None:
                 initial_displacement = torch.zeros_like(network_input[:, :1])
@@ -132,11 +133,13 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             )
             tokens = torch.cat((initial_token, response_tokens), dim=1)
             output, _ = self._temporal_module()(tokens, None, True)
-            boundary_prediction = (
-                output[:, :1] * self.input_displacement_scale
+            boundary_prediction = output[:, :1] * self.output_increment_scale
+            boundary_increment = (
+                torch.zeros_like(boundary_prediction)
+                if previous_increment is None else previous_increment
             )
             increment = output[:, 1:] * self.output_increment_scale
-            return increment, None, boundary_prediction, initial_displacement
+            return increment, None, boundary_prediction, boundary_increment
         increment, temporal_state = self._temporal_module()(
             network_input, temporal_state, True
         )
@@ -230,7 +233,8 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             boundary_prediction,
             boundary_initial,
         ) = self._temporal_forward(
-            network_input, explicit_initial, temporal_state
+            network_input, explicit_initial, temporal_state,
+            previous_increment=None if state is None else state["last_increment"],
         )
         if state is None:
             increment_nl = force_initial_zero(increment_nl)
@@ -274,6 +278,7 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             "elastic": elastic_state,
             "displacement_nl": displacement_nl[:, -1:].detach(),
             "explicit_displacement": displacement_nl[:, -1:].detach(),
+            "last_increment": increment_nl[:, -1:].detach(),
             "material": {
                 key: value.detach() for key, value in material_state.items()
             },

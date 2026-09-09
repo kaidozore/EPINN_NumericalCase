@@ -220,7 +220,7 @@ class EPINN_MDOFSys_DisIncrement_PhyLoss(nn.Module):
             boundary_error = (
                 prediction["boundary_prediction"]
                 - prediction["boundary_initial"].detach()
-            ) / displacement_scale
+            ) / increment_scale
             continuity_mse = self._mse(boundary_error)
         weighted_continuity = (
             self.continuity_loss_weight * continuity_mse

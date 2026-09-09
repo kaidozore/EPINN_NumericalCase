@@ -240,6 +240,7 @@ def main() -> None:
         "network_output": "nonlinear_total_displacement_increment",
         "sequence_model": args.sequence_model,
         "stitch_mode": args.stitch_mode,
+        "overlap_output_quantity": "displacement_increment",
         "continuity_loss_weight": args.continuity_loss_weight,
         "transformer_layers": args.transformer_layers,
         "transformer_heads": args.transformer_heads,
