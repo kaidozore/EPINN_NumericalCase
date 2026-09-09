@@ -163,7 +163,9 @@ def main() -> None:
         "collate_fn": DynAna_dataset_collate,
     }
     genTrain = DataLoader(
-        train_dataset, shuffle=True, drop_last=True, **common_loader
+        train_dataset, shuffle=True, drop_last=True,
+        generator=torch.Generator().manual_seed(config.random_seed),
+        **common_loader
     )
     genVal = DataLoader(
         val_dataset, shuffle=False, drop_last=False, **common_loader
