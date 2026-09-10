@@ -194,6 +194,36 @@ def _maximum_ductility_scores(
     return np.max(np.abs(maximum_fiber_strain), axis=1) / yield_strain
 
 
+def _representative_labels(config, train, count, n_sample):
+    """Training-only coverage of ductility and signed late-time displacement.
+
+    Seed with weak/strong ductility and both displacement-offset extremes,
+    then greedily cover the remaining two-dimensional feature space.
+    No validation/test response participates in label selection.
+    """
+    if count == 0:
+        return np.empty(0, dtype=np.int64)
+    ductility = _maximum_ductility_scores(config, n_sample)[train]
+    with h5py.File(config.response_file, "r") as mat:
+        response = mat["U"]
+        offset = np.asarray(response[train, response.shape[1] // 2:, -1]).mean(axis=1)
+    features = np.column_stack((np.log1p(ductility), offset))
+    if not np.isfinite(features).all():
+        raise ValueError("Non-finite training features for representative labels.")
+    span = np.ptp(features, axis=0)
+    features = (features - features.min(axis=0)) / np.where(span > 0, span, 1)
+    chosen = []
+    for index in (np.argmin(ductility), np.argmax(ductility),
+                  np.argmin(offset), np.argmax(offset)):
+        if int(index) not in chosen and len(chosen) < count:
+            chosen.append(int(index))
+    while len(chosen) < count:
+        distance = ((features[:, None] - features[chosen][None]) ** 2).sum(axis=2).min(axis=1)
+        distance[chosen] = -1
+        chosen.append(int(np.argmax(distance)))
+    return np.sort(train[chosen])
+
+
 def build_data_split(config: CaseConfig, n_sample: int) -> DataSplit:
     """Prioritize the strongest nonlinear samples, then split reproducibly."""
 
@@ -245,9 +275,12 @@ def build_data_split(config: CaseConfig, n_sample: int) -> DataSplit:
         validation = np.sort(model_pool[train_count:])
         priority_nonlinear = np.empty(0, dtype=np.int64)
     labelled_count = min(config.labelled_sample_count, train.size)
-    labelled = np.sort(
-        generator.choice(train, size=labelled_count, replace=False)
-    )
+    if config.label_selection == "representative":
+        labelled = _representative_labels(config, train, labelled_count, n_sample)
+    elif config.label_selection == "random":
+        labelled = np.sort(generator.choice(train, size=labelled_count, replace=False))
+    else:
+        raise ValueError("label_selection must be random or representative.")
     return DataSplit(
         train, validation, test, labelled, np.sort(priority_nonlinear)
     )
@@ -258,6 +291,20 @@ def load_scale_from_training(
 ) -> np.ndarray:
     scale = np.sqrt(np.mean(np.square(load[train_indices]), axis=(0, 1)))
     return np.where(scale > 1.0e-12, scale, 1.0)
+
+
+def fixed_dof_response_scales(stiffness, increment_scale=0.1, displacement_scale=0.5):
+    """Fixed shape under equal unit nodal forces, using imported MATLAB K0.
+
+    This is a reference scaling only, never a replacement for the real load.
+    Normalize by the top DOF. No response labels or sample RMS are used.
+    """
+    stiffness = np.asarray(stiffness, dtype=np.float64)
+    shape = np.linalg.solve(stiffness, np.ones(stiffness.shape[0]))
+    if not np.isfinite(shape).all() or np.any(shape <= 0):
+        raise ValueError("Reference scaling requires positive static displacements.")
+    ratio = shape / shape[-1]
+    return (float(increment_scale) * ratio).tolist(), (float(displacement_scale) * ratio).tolist()
 
 
 def as_torch_case(data: CaseData, device: torch.device) -> dict:

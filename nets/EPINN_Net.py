@@ -61,16 +61,18 @@ class EPINN_PhyLSTM_NetBody(nn.Module):
             raise ValueError(
                 "stitch_mode must be 'hidden' or 'explicit-overlap'."
             )
-        if input_displacement_scale <= 0.0:
-            raise ValueError("input_displacement_scale must be positive.")
-        # Plain scalar (not a state-dict buffer) keeps older increment-model
-        # checkpoints loadable without migration.
-        self.input_displacement_scale = float(input_displacement_scale)
-        self.output_increment_scale = float(
+        def dof_scale(value):
+            scale = torch.as_tensor(value, dtype=stiffness.dtype, device=stiffness.device).reshape(-1)
+            if scale.numel() not in (1, nLoadNL) or not torch.isfinite(scale).all() or torch.any(scale <= 0):
+                raise ValueError("Physical scale must be positive scalar or one value per DOF.")
+            return scale.reshape(1, 1, -1)
+        # Metadata reconstructs scales; nonpersistent buffers preserve old state dicts.
+        self.register_buffer("input_displacement_scale", dof_scale(input_displacement_scale), persistent=False)
+        self.register_buffer("output_increment_scale", dof_scale(
             input_increment_scale
             if output_increment_scale is None
             else output_increment_scale
-        )
+        ), persistent=False)
         self.ElasticInput_Module = ElasticIncrementInput(
             influence_kernel, nLoad, input_increment_scale
         )

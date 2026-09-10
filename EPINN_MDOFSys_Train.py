@@ -20,6 +20,7 @@ from utils.DataPreProcess import (
     as_torch_case,
     build_data_split,
     load_case_data,
+    fixed_dof_response_scales,
 )
 from utils.utils import seed_everything
 from utils.utils_fit_EPINN import fitOneEpoch_EPINN_PhyLoss
@@ -28,6 +29,8 @@ from utils.utils_fit_EPINN import fitOneEpoch_EPINN_PhyLoss
 def parse_args() -> argparse.Namespace:
     default_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dof-scaling", choices=("uniform", "stiffness-profile"), default="stiffness-profile")
+    parser.add_argument("--label-selection", choices=("random", "representative"), default="representative")
     parser.add_argument("--data-root", type=Path, default=default_root)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=10)
@@ -145,6 +148,7 @@ def main() -> None:
         time_truncation=args.time_truncation,
         sequence_length=args.sequence_length,
         labelled_sample_count=args.labelled_samples,
+        label_selection=args.label_selection,
     )
     seed_everything(config.random_seed)
     device = torch.device(args.device)
@@ -152,6 +156,10 @@ def main() -> None:
         torch.backends.cudnn.benchmark = True
 
     data = load_case_data(config)
+    if args.dof_scaling == "stiffness-profile":
+        config.displacement_increment_scale, config.displacement_scale = fixed_dof_response_scales(data.stiffness)
+    print(f"Fixed DOF increment scales (m): {config.displacement_increment_scale}")
+    print(f"Fixed DOF displacement scales (m): {config.displacement_scale}")
     split = build_data_split(config, data.load.shape[0])
     # Use one fixed physical reference force for all samples and DOFs.  A
     # doubled load therefore remains doubled after scaling.
@@ -269,8 +277,9 @@ def main() -> None:
             "LSTM_increment-labelled_increment)/fixed_displacement_scale) "
             "+ continuity_loss_weight*MSE(overlap_boundary_error)"
         ),
-        "input_increment_scale": float(config.displacement_increment_scale),
-        "input_displacement_scale": float(config.displacement_scale),
+        "dof_scaling": args.dof_scaling,
+        "input_increment_scale": config.displacement_increment_scale,
+        "input_displacement_scale": config.displacement_scale,
         "hidden_size": args.hidden_size,
         "fc_size": args.fc_size,
         "n_load": int(data.load.shape[2]),
@@ -278,8 +287,8 @@ def main() -> None:
         "delta_t": data.delta_t,
         "tbptt_length": args.tbptt_length,
         "gradient_clip": args.gradient_clip,
-        "increment_scale": float(config.displacement_increment_scale),
-        "displacement_scale": float(config.displacement_scale),
+        "increment_scale": config.displacement_increment_scale,
+        "displacement_scale": config.displacement_scale,
         "increment_loss_weight": args.increment_loss_weight,
         "local_cumsum_loss_weight": args.local_cumsum_loss_weight,
         "local_cumsum_window": args.local_cumsum_window,
@@ -288,7 +297,7 @@ def main() -> None:
         "label_local_cumsum_loss_weight": (
             args.label_local_cumsum_loss_weight
         ),
-        "output_increment_scale": float(config.displacement_increment_scale),
+        "output_increment_scale": config.displacement_increment_scale,
         "output_head_init_gain": float(model.output_head_init_gain),
     }
     configuration_path = save_training_configuration(

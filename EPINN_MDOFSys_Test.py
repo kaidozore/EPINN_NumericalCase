@@ -183,11 +183,9 @@ def build_model(
         "stiffness": tensors["stiffness"],
         "fiber": tensors["fiber"],
         "steel": tensors["steel"],
-        "input_increment_scale": float(
-            checkpoint.get(
+        "input_increment_scale": checkpoint.get(
                 "input_increment_scale", config.displacement_increment_scale
-            )
-        ),
+            ),
         "hidden_size": int(checkpoint["hidden_size"]),
         "fc_size": int(checkpoint["fc_size"]),
         "sequence_model": checkpoint.get("sequence_model", "lstm"),
@@ -203,17 +201,13 @@ def build_model(
         model = EPINN_PhyLSTM_NetBody(
             reset_lstm_state=bool(checkpoint.get("reset_lstm_state", False)),
             physics_evaluation=checkpoint.get("physics_evaluation", "chunk"),
-            input_displacement_scale=float(
-                checkpoint.get(
+            input_displacement_scale=checkpoint.get(
                     "input_displacement_scale", config.displacement_scale
-                )
-            ),
-            output_increment_scale=float(
-                checkpoint.get(
+                ),
+            output_increment_scale=checkpoint.get(
                     "output_increment_scale",
                     config.displacement_increment_scale,
-                )
-            ),
+                ),
             **common,
         )
     else:

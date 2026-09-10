@@ -151,3 +151,46 @@ python PINN_MDOFSys_Predict.py checkpoint.pth --data-root ..
 python EPINN_MDOFSys_Predict.py checkpoint.pth --data-root ..
 python EPINN_MDOFSys_Full_Predict.py checkpoint.pth --data-root ..
 ```
+# Representative labelled training samples
+
+## Fixed per-DOF scaling (increment E-PINN)
+
+New increment E-PINN training defaults to `--dof-scaling stiffness-profile`.
+`--dof-scaling uniform` retains the former scalar scales. Full E-PINN and PINN
+scaling is unchanged by this option. The fixed reference shape is
+`v = solve(K0, ones(5))`, `r = v / v[-1]`, using the imported MATLAB stiffness.
+The equal unit nodal forces define a reference shape only; actual wave loading
+and the physical equations are not changed. No sample normalization/RMS is used.
+The increment and displacement scales are `0.1*r` and `0.5*r` metres.
+Input elastic increments are divided by the increment vector; raw network outputs
+are multiplied by the same vector before constitutive evaluation and SCL. All
+increment consistency/label losses use this same increment vector; local
+cumulative losses use the displacement vector. Physical outputs remain in metres.
+These scales define a relative weighting, not a guarantee of equal dynamic
+responses or accurate drift. Metadata stores the exact vectors. Test using
+`EPINN_MDOFSys_Test.py --variant increment`, which supports both scalar legacy
+checkpoints and new vector scales; the older Predict entry point rejects vectors.
+
+For the current K0 the bottom-to-top increment scales are
+`[0.0066666667, 0.0235, 0.0465, 0.0726666667, 0.1]` m and displacement scales are
+`[0.0333333333, 0.1175, 0.2325, 0.3633333333, 0.5]` m.
+
+Increment E-PINN, full E-PINN and full PINN training accept
+`--label-selection representative|random` (new training default: `representative`).
+Use `--labelled-samples 10` to keep the label budget at ten for each method.
+The train/validation/test split is unchanged. Only training samples are eligible.
+Selection covers log(1 + maximum fiber ductility) and signed mean top displacement
+over the second half of the reference history. The latter is an offset diagnostic,
+not a definition of unloaded residual displacement. After seeding the weak/strong
+ductility and negative/positive offset extremes, deterministic farthest-point
+selection fills the remaining slots using training-only min-max feature ranges.
+This is response-informed selection from already computed MATLAB training data;
+it is not random sampling or label-free active learning.
+
+The strategy and exact indices are saved in the existing training configuration
+and checkpoint. Legacy configurations without this field retain random selection.
+For the current 300-sample dataset, ten representative MATLAB sample indices are
+22, 47, 48, 67, 76, 111, 128, 145, 180, 289. They are computed, not hardcoded.
+Increment E-PINN label supervision remains displacement-increment MSE (weight 0.2)
+plus 32-step local cumulative-error MSE (weight 0.01); no loss weights or physical
+branches are changed by this selection option.

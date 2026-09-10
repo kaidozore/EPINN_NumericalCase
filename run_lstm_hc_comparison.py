@@ -14,6 +14,8 @@ def main():
     p.add_argument('--output-dir', type=Path, required=True)
     p.add_argument('--epochs', type=int, default=200)
     p.add_argument('--physics-evaluation', choices=('chunk','full-history'), default='full-history')
+    p.add_argument('--label-selection', choices=('random','representative'), default='representative')
+    p.add_argument('--dof-scaling', choices=('uniform','stiffness-profile'), default='stiffness-profile')
     args = p.parse_args()
     root = Path(__file__).resolve().parent
     out = args.output_dir.resolve()
@@ -27,6 +29,7 @@ def main():
               '--label-increment-loss-weight', '0.2', '--label-local-cumsum-loss-weight', '0.01',
               '--device', 'cuda']
     shared += ['--physics-evaluation', args.physics_evaluation]
+    shared += ['--label-selection', args.label_selection, '--dof-scaling', args.dof_scaling]
     state = dict(created=datetime.now().isoformat(), pid=os.getpid(),
                  git_commit=subprocess.check_output(['git','rev-parse','HEAD'], cwd=root, text=True).strip(),
                  shared_arguments=shared, experiments={k:dict(status='queued') for k in ['carry-hc','reset-hc']})
@@ -69,6 +72,11 @@ def main():
         save()
         if code:
             return
+    with (out/'comparison_plot.log').open('w') as f:
+        code = subprocess.call([sys.executable, str(root/'plot_lstm_hc_comparison.py'),
+                                '--comparison-dir', str(out), '--sample', '152'],
+                               cwd=root, stdout=f, stderr=subprocess.STDOUT)
+    state['plot_exit_code'] = code
     state['finished'] = datetime.now().isoformat()
     save()
 

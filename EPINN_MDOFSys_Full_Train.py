@@ -24,6 +24,7 @@ from utils.utils_fit_EPINN import fitOneEpoch_EPINN_PhyLoss
 def parse_args() -> argparse.Namespace:
     default_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--label-selection", choices=("random", "representative"), default="representative")
     parser.add_argument("--data-root", type=Path, default=default_root)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=10)
@@ -102,6 +103,7 @@ def main() -> None:
         time_truncation=args.time_truncation,
         sequence_length=args.sequence_length,
         labelled_sample_count=args.labelled_samples,
+        label_selection=args.label_selection,
     )
     seed_everything(config.random_seed)
     device = torch.device(args.device)
